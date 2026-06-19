@@ -1,0 +1,4 @@
+Title: Century, bold, 22
+Subtitle: Georgia, 13
+Key Legend: Calibri, bold, 29
+Table of contents: Century, bold, 19, line space -5
