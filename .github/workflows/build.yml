@@ -13,9 +13,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: Code/PocketMuse
 
     steps:
       - name: Checkout
@@ -46,7 +43,7 @@ jobs:
       - name: Commit PocketMuse.tar if changed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          file_pattern: Code/PocketMuse/PocketMuse.tar
+          file_pattern: PocketMuse.tar
           commit_message: "chore: auto-build PocketMuse.tar"
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"
