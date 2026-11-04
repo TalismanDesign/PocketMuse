@@ -1,6 +1,11 @@
-#include <globals.h>
 #include "muse.h"
 #include "albumart.h"
+#include "ui_helpers.h"
+
+#include "pm_app_api.h"
+
+#include <cstdio>
+#include <cstring>
 
 static constexpr int kArtX = 8;
 static constexpr int kArtY = 28;
@@ -8,14 +13,13 @@ static constexpr int kArtSize = 120;
 static constexpr int kInfoX = 136;
 static constexpr int kInfoW = 176;
 
+static uint8_t  s_artCache[(kArtSize * kArtSize) / 8];
+static char     s_artCachePath[256] = {};
+static int      s_cachedW = 0, s_cachedH = 0;
+
 void nowplaying_init() {
     g_appMode = MODE_NOWPLAYING;
     g_needsRedraw = true;
-}
-
-static void truncate_text(const char* src, char* dst, size_t maxDst) {
-    strncpy(dst, src, maxDst - 1);
-    dst[maxDst - 1] = '\0';
 }
 
 void nowplaying_process_key(char ch) {
@@ -66,7 +70,7 @@ void nowplaying_process_key(char ch) {
         break;
     case 'f': case 'F': {
         if (g_nowPath[0]) {
-            g_isFavorite = g_playlistMgr.toggleFavorite(g_nowPath);
+            g_isFavorite = playlistMgr().toggleFavorite(g_nowPath);
         }
         g_needsRedraw = true;
         break;
@@ -92,10 +96,6 @@ void nowplaying_process_key(char ch) {
     }
 }
 
-static uint8_t  s_artCache[(kArtSize * kArtSize) / 8];
-static char     s_artCachePath[256] = {};
-static int      s_cachedW = 0, s_cachedH = 0;
-
 void nowplaying_cache_art(const char* path) {
     s_cachedW = 0;
     s_cachedH = 0;
@@ -109,22 +109,20 @@ void nowplaying_cache_art(const char* path) {
     if (art.render1Bit(s_artCache, kArtSize, kArtSize, 0, 0, kArtSize)) {
         s_cachedW = art.width();
         s_cachedH = art.height();
-        strncpy(s_artCachePath, path, sizeof(s_artCachePath) - 1);
+        std::strncpy(s_artCachePath, path, sizeof(s_artCachePath) - 1);
         s_artCachePath[sizeof(s_artCachePath) - 1] = '\0';
     }
 }
 
 void nowplaying_render() {
-    beginEinkScreen();
+    pm_ui_begin_eink_screen(false);
 
     if (g_nowTitle[0] == '\0' && g_nowPath[0] == '\0') {
         draw_header("Now Playing");
-        FontEngine::drawText(DisplayTarget::EINK, 8, 80,
-                             "Nothing playing", FontStyle::Tiny);
-        FontEngine::drawText(DisplayTarget::EINK, 8, 94,
-                             "Select a track from the browser", FontStyle::Tiny);
+        pm_text(PM_TARGET_EINK, 8, 80, "Nothing playing", PM_STYLE_TINY);
+        pm_text(PM_TARGET_EINK, 8, 94, "Select a track from the browser", PM_STYLE_TINY);
         draw_footer("B:browser ?:help");
-        EINK().refresh();
+        pm_eink_refresh();
         return;
     }
 
@@ -141,16 +139,21 @@ void nowplaying_render() {
 
     bool artDrawn = false;
     if (s_cachedW > 0 && s_cachedH > 0) {
-        display.drawBitmap(kArtX, kArtY, s_artCache,
-                           s_cachedW, s_cachedH, GxEPD_BLACK);
+        int rowBytes = (s_cachedW + 7) / 8;
+        for (int py = 0; py < s_cachedH; py++) {
+            for (int px = 0; px < s_cachedW; px++) {
+                int byteIdx = py * rowBytes + (px >> 3);
+                bool bit = (s_artCache[byteIdx] >> (7 - (px & 7))) & 1;
+                pm_eink_pixel(kArtX + px, kArtY + py, bit);
+            }
+        }
         artDrawn = true;
     }
 
     // If no art, draw a placeholder frame
     if (!artDrawn) {
-        display.drawRect(kArtX, kArtY, kArtSize, kArtSize, GxEPD_BLACK);
-        FontEngine::drawText(DisplayTarget::EINK, kArtX + 32, kArtY + 64,
-                             "No Art", FontStyle::Tiny);
+        pm_eink_rect(kArtX, kArtY, kArtX + kArtSize - 1, kArtY + kArtSize - 1, false, true);
+        pm_text(PM_TARGET_EINK, kArtX + 32, kArtY + 64, "No Art", PM_STYLE_TINY);
     }
 
     // Track info
@@ -158,58 +161,47 @@ void nowplaying_render() {
 
     // Title
     truncate_text(g_nowTitle, buf, sizeof(buf));
-    String title = truncateWithEllipsis(buf, kInfoW - 8, FontStyle::Body);
-    FontEngine::drawText(DisplayTarget::EINK, kInfoX, kArtY + 18,
-                         title, FontStyle::Body);
+    pm_text(PM_TARGET_EINK, kInfoX, kArtY + 18, buf, PM_STYLE_BODY);
 
     // Artist
     truncate_text(g_nowArtist, buf, sizeof(buf));
     if (buf[0]) {
-        String artist = truncateWithEllipsis(buf, kInfoW - 8, FontStyle::Body);
-        FontEngine::drawText(DisplayTarget::EINK, kInfoX, kArtY + 40,
-                             artist, FontStyle::Body);
+        pm_text(PM_TARGET_EINK, kInfoX, kArtY + 40, buf, PM_STYLE_BODY);
     }
 
     // Album
     truncate_text(g_nowAlbum, buf, sizeof(buf));
     if (buf[0]) {
-        String album = truncateWithEllipsis(buf, kInfoW - 8, FontStyle::Body);
-        FontEngine::drawText(DisplayTarget::EINK, kInfoX, kArtY + 60,
-                             album, FontStyle::Body);
+        pm_text(PM_TARGET_EINK, kInfoX, kArtY + 60, buf, PM_STYLE_BODY);
     }
 
     // Status line
     int statusY = kArtY + 82;
     int col = kInfoX;
     if (g_isFavorite) {
-        FontEngine::drawText(DisplayTarget::EINK, col, statusY,
-                             "Fav", FontStyle::Tiny);
+        pm_text(PM_TARGET_EINK, col, statusY, "Fav", PM_STYLE_TINY);
         col += 40;
     }
     switch (g_loopMode) {
         case LoopMode::None: break;
         case LoopMode::One:
-            FontEngine::drawText(DisplayTarget::EINK, col, statusY,
-                                 "R1", FontStyle::Tiny);
+            pm_text(PM_TARGET_EINK, col, statusY, "R1", PM_STYLE_TINY);
             col += 35;
             break;
         case LoopMode::All:
-            FontEngine::drawText(DisplayTarget::EINK, col, statusY,
-                                 "RA", FontStyle::Tiny);
+            pm_text(PM_TARGET_EINK, col, statusY, "RA", PM_STYLE_TINY);
             col += 35;
             break;
     }
     if (g_shuffleEnabled) {
-        FontEngine::drawText(DisplayTarget::EINK, col, statusY,
-                             "Sf", FontStyle::Tiny);
+        pm_text(PM_TARGET_EINK, col, statusY, "Sf", PM_STYLE_TINY);
         col += 30;
     }
 
     // Volume
     char volBuf[16];
-    snprintf(volBuf, sizeof(volBuf), "V:%d", (g_volume * 100 + 127) / 255);
-    FontEngine::drawText(DisplayTarget::EINK, col, statusY,
-                         volBuf, FontStyle::Tiny);
+    snprintf(volBuf, sizeof(volBuf), "V:%u", (g_volume * 100 + 127) / 255);
+    pm_text(PM_TARGET_EINK, col, statusY, volBuf, PM_STYLE_TINY);
 
     // Play/pause status
     int playStatusY = statusY + 16;
@@ -221,31 +213,29 @@ void nowplaying_render() {
     } else {
         playStatus = "[] Stopped";
     }
-    FontEngine::drawText(DisplayTarget::EINK, kInfoX, playStatusY,
-                         playStatus, FontStyle::Tiny);
+    pm_text(PM_TARGET_EINK, kInfoX, playStatusY, playStatus, PM_STYLE_TINY);
 
     // Progress bar
     int barY = kArtY + kArtSize + 14;
-    int barW = display.width() - 16;
-    display.drawRect(8, barY, barW, 8, GxEPD_BLACK);
+    int barW = pm_eink_width() - 16;
+    pm_eink_rect(8, barY, 8 + barW - 1, barY + 7, false, true);
     if (g_nowProgress > 0.0f && g_nowProgress <= 1.0f) {
         int filled = (int)((barW - 2) * g_nowProgress);
-        if (filled > 0) display.fillRect(9, barY + 1, filled, 6, GxEPD_BLACK);
+        if (filled > 0) pm_eink_rect(9, barY + 1, 9 + filled - 1, barY + 6, true, true);
     }
 
     // Time
     char timeBuf[32];
     char elapsedStr[16];
     char durationStr[16];
-    uint32_t elapsed = (uint32_t)(g_nowProgress * g_nowDuration);
+    uint32_t elapsed = static_cast<uint32_t>(g_nowProgress * g_nowDuration);
     format_time(elapsedStr, sizeof(elapsedStr), elapsed);
     format_time(durationStr, sizeof(durationStr), g_nowDuration);
     snprintf(timeBuf, sizeof(timeBuf), "%s / %s", elapsedStr, durationStr);
-    FontEngine::drawText(DisplayTarget::EINK, 8, barY + 24,
-                         timeBuf, FontStyle::Tiny);
+    pm_text(PM_TARGET_EINK, 8, barY + 24, timeBuf, PM_STYLE_TINY);
 
     // Footer
     draw_footer("SPC:pause < >:skip /\\/:vol B:browser P:plist ?:help");
 
-    EINK().refresh();
+    pm_eink_refresh();
 }

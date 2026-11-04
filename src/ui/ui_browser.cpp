@@ -1,20 +1,28 @@
-#include <globals.h>
 #include "muse.h"
+#include "library.h"
+#include "playlist.h"
+#include "ui_helpers.h"
+
+#include "paths.h"
+#include "pm_app_api.h"
+
+#include <cstdio>
+#include <cstring>
 
 static constexpr int kItemH     = 10;
 static constexpr int kListTop   = 32;
-static constexpr int kListBot   = kEinkContentH;
+static constexpr int kListBot   = 214;
 static constexpr int kMaxVis    = (kListBot - kListTop) / kItemH; // 18 rows
 
 static int g_scrollOffset = 0;
 
 static const char* source_label() {
-    switch (g_playlistMgr.source()) {
+    switch (playlistMgr().source()) {
         case PlaySource::Library:   return "Library";
         case PlaySource::Favorites: return "Favorites";
         case PlaySource::Playlist: {
-            int pi = g_playlistMgr.playlistIndex();
-            if (pi >= 0) return g_playlistMgr.playlistMeta(pi).name.c_str();
+            int pi = playlistMgr().playlistIndex();
+            if (pi >= 0) return playlistMgr().playlistMeta(pi).name;
             return "Playlist";
         }
     }
@@ -22,10 +30,10 @@ static const char* source_label() {
 }
 
 static int track_count() {
-    switch (g_playlistMgr.source()) {
-        case PlaySource::Library:   return g_library.count();
+    switch (playlistMgr().source()) {
+        case PlaySource::Library:   return library().count();
         case PlaySource::Favorites:
-        case PlaySource::Playlist:  return g_playlistMgr.entryCount();
+        case PlaySource::Playlist:  return playlistMgr().entryCount();
     }
     return 0;
 }
@@ -40,7 +48,6 @@ void browser_init() {
 
 void browser_process_key(char ch) {
     int n = track_count();
-    int page = kMaxVis;
 
     switch (ch) {
     case 19: // LEFT - prev track
@@ -73,7 +80,7 @@ void browser_process_key(char ch) {
         if (n > 0 && g_selIndex < n) {
             char path[256];
             if (get_track_path(g_selIndex, path, sizeof(path)) && path[0]) {
-                g_isFavorite = g_playlistMgr.toggleFavorite(path);
+                g_isFavorite = playlistMgr().toggleFavorite(path);
             }
         }
         g_needsRedraw = true;
@@ -92,11 +99,11 @@ void browser_process_key(char ch) {
         break;
     }
     case 'd': case 'D':
-        if (g_playlistMgr.source() == PlaySource::Playlist && n > 0) {
-            int pi = g_playlistMgr.playlistIndex();
+        if (playlistMgr().source() == PlaySource::Playlist && n > 0) {
+            int pi = playlistMgr().playlistIndex();
             int idx = g_selIndex;
             if (idx < g_trackCount) {
-                g_playlistMgr.removeFromPlaylist(pi, idx);
+                playlistMgr().removeFromPlaylist(pi, idx);
                 g_trackCount = track_count();
                 if (g_selIndex >= g_trackCount && g_selIndex > 0) g_selIndex--;
                 g_needsRedraw = true;
@@ -118,7 +125,7 @@ void browser_process_key(char ch) {
 }
 
 void browser_render() {
-    beginEinkScreen();
+    pm_ui_begin_eink_screen(false);
 
     char hdr[64];
     snprintf(hdr, sizeof(hdr), "%s  [%d]", source_label(), g_trackCount);
@@ -126,12 +133,12 @@ void browser_render() {
 
     int n = track_count();
     if (n == 0) {
-        FontEngine::drawText(DisplayTarget::EINK, 8, 80,
-                             "No tracks found", FontStyle::Body);
-        FontEngine::drawText(DisplayTarget::EINK, 8, 94,
-                             "Place .mp3 files in /music/ on SD", FontStyle::Body);
-        draw_footer("No tracks - add .mp3 files to /music/");
-        EINK().refresh();
+        char hint[96];
+        snprintf(hint, sizeof(hint), "Put .mp3 files in %s", paths::kMusicDir);
+        pm_text(PM_TARGET_EINK, 8, 80, "No tracks found", PM_STYLE_BODY);
+        pm_text(PM_TARGET_EINK, 8, 94, hint, PM_STYLE_BODY);
+        draw_footer("No tracks - add .mp3 files to the music folder");
+        pm_eink_refresh();
         return;
     }
 
@@ -142,32 +149,33 @@ void browser_render() {
     int end = g_scrollOffset + kMaxVis;
     if (end > n) end = n;
 
+    int w = pm_eink_width();
+
     for (int i = g_scrollOffset; i < end; i++) {
         char path[256];
         char label[64];
         get_track_path(i, path, sizeof(path));
         get_display_name(path, label, sizeof(label));
 
-        String row = truncateWithEllipsis(label, display.width() - 24,
-                                          FontStyle::Tiny);
+        // Truncate with ellipsis to fit the available width.
+        const char* ell = pm_layout_truncate_with_ellipsis(
+            label, w - 24, PM_STYLE_TINY, PM_TARGET_EINK);
+        char row[96];
+        strncpy(row, ell, sizeof(row) - 1);
+        row[sizeof(row) - 1] = '\0';
 
         if (i == g_selIndex) {
-            display.fillRect(0, y - 8, display.width(), kItemH, GxEPD_BLACK);
-            u8g2f.setForegroundColor(GxEPD_WHITE);
-        } else {
-            u8g2f.setForegroundColor(GxEPD_BLACK);
+            // Selected row: black outline rect, text drawn on top.
+            pm_eink_rect(0, y - 8, w - 1, y - 8 + kItemH, false, true);
         }
-
-        FontEngine::drawText(DisplayTarget::EINK, 8, y, row, FontStyle::Tiny);
-
+        pm_text(PM_TARGET_EINK, 8, y, row, PM_STYLE_TINY);
         y += kItemH;
     }
-    u8g2f.setForegroundColor(GxEPD_BLACK);
 
     draw_scrollbar(n, kMaxVis, g_scrollOffset);
 
     char footer[64] = {};
-    if (g_playlistMgr.source() == PlaySource::Playlist) {
+    if (playlistMgr().source() == PlaySource::Playlist) {
         snprintf(footer, sizeof(footer),
             "L/R:nav SPC:play P:src F:fav D:del ?:help");
     } else {
@@ -176,5 +184,5 @@ void browser_render() {
     }
     draw_footer(footer);
 
-    EINK().refresh();
+    pm_eink_refresh();
 }

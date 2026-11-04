@@ -7,25 +7,21 @@ shuffle, and loop modes. Runs as an OTA application slot on the PocketMage OS.
 
 ## Build
 
-Requires PlatformIO, `just`, and the standard ESP32-S3 toolchain.
+PocketMuse is an ELF app built against the PocketMage SDK.
+Build it with the `pm` CLI from the SDK checkout:
 
 ```sh
-just build
+pm build --pack
 ```
 
-This runs two scripts in sequence:
+That compiles `src/`, links `build/PocketMuse.app.elf` plus the
+`build/PocketMuse.elfo` overlay, and packs both into `PocketMuse.tar` for the
+OS to install into an app slot. The raw `make` recipe lives in `Makefile` and
+`$(SDK_ROOT)/tools/app.mk`; it needs `SDK_ROOT` (or `PM_SDK_ROOT`) pointing at
+the SDK checkout.
 
-1. `scripts/build_firmware.py` - run `pio run -e OTA_APP`.
-2. `scripts/package_ota.py` - wrap `firmware.bin` into `PocketMuse.tar` for
-   OTA distribution.
-
-The default environment is `OTA_APP`. Set `env` in the `Justfile` or pass
-`ENV=<name>` to build a different PlatformIO environment.
-
-```sh
-just upload      # build + upload via USB
-just monitor     # build + upload + serial monitor
-```
+`mp3` files live in `/music/` at the root of the SD card; the app creates that
+directory along with `/music/.muse/` on first launch.
 
 ## Key bindings
 
@@ -74,11 +70,6 @@ src/
       ui_playlist.cpp   playlist queue view
       ui_helpers.cpp    header/footer/scrollbar/OLED/time formatting
 include/                public headers
-lib/
-   PocketMage/          shared PocketMage PDA framework (submodule)
-scripts/
-   build_firmware.py     PlatformIO build helper
-   package_ota.py       firmware -> tar for OTA
 ```
 
 ## License

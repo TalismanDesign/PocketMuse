@@ -1,136 +1,132 @@
-#include <globals.h>
+#include "ui_helpers.h"
+
 #include "muse.h"
+
+#include "pm_app_api.h"
+
+#include <cstdio>
+#include <cstring>
 
 static constexpr int kLineH = 10;
 
 void draw_header(const char* title) {
-    u8g2f.setForegroundColor(GxEPD_BLACK);
-    FontEngine::drawText(DisplayTarget::EINK, 8, 16,
-                         title ? title : "", FontStyle::Body);
-    display.drawFastHLine(0, 22, display.width(), GxEPD_BLACK);
+    pm_text_color(PM_TARGET_EINK, 1); // black glyphs
+    pm_text(PM_TARGET_EINK, 8, 16, title ? title : "", PM_STYLE_BODY);
+    pm_eink_rect(0, 22, pm_eink_width() - 1, 22, false, true);
 }
 
 void draw_footer(const char* hints) {
-    EINK().drawStatusBar(hints ? hints : "");
+    pm_eink_status_bar(hints ? hints : "", false);
 }
 
 void draw_scrollbar(int total, int visible, int position) {
     if (total <= visible) return;
-    drawScrollbar(total, visible, position, -1, 0, kEinkContentH, 3,
-                  false, GxEPD_BLACK, GxEPD_WHITE);
+    int h = pm_eink_height();
+    pm_ui_draw_scrollbar(total, visible, position, -1, 0, h, 3,
+                         false, 0, 65535);
 }
 
 void format_time(char* buf, size_t bufSize, uint32_t seconds) {
     uint32_t m = seconds / 60;
     uint32_t s = seconds % 60;
-    snprintf(buf, bufSize, "%d:%02d", m, s);
+    snprintf(buf, bufSize, "%u:%02u", m, s);
 }
 
 void get_display_name(const char* path, char* out, size_t maxLen) {
-    const char* name = strrchr(path, '/');
+    const char* name = std::strrchr(path, '/');
     if (name) name++; else name = path;
-    strncpy(out, name, maxLen - 1);
+    std::strncpy(out, name, maxLen - 1);
     out[maxLen - 1] = '\0';
-    char* dot = strrchr(out, '.');
-    if (dot) {
-        char* p = dot;
-        while (*p) { *p = '\0'; p++; }
-    }
+    char* dot = std::strrchr(out, '.');
+    if (dot) *dot = '\0';
+}
+
+void truncate_text(const char* src, char* dst, size_t maxDst) {
+    std::strncpy(dst, src, maxDst - 1);
+    dst[maxDst - 1] = '\0';
 }
 
 void ui_update_oled() {
-    u8g2.clearBuffer();
-
-    // Top line: play state + now playing
-    String now = "   ";
+    char now[128];
     if (g_playState == PlayerState::Playing) {
-        now = ">> ";
-        now += g_nowTitle;
         if (g_nowArtist[0]) {
-            now += " - ";
-            now += g_nowArtist;
+            snprintf(now, sizeof(now), ">> %s - %s", g_nowTitle, g_nowArtist);
+        } else {
+            snprintf(now, sizeof(now), ">> %s", g_nowTitle);
         }
     } else if (g_playState == PlayerState::Paused) {
-        now = "|| ";
-        now += g_nowTitle;
+        snprintf(now, sizeof(now), "|| %s", g_nowTitle);
     } else if (g_nowTitle[0]) {
-        now += g_nowTitle;
+        snprintf(now, sizeof(now), "  %s", g_nowTitle);
     } else {
-        now += "PocketMuse";
+        snprintf(now, sizeof(now), "  PocketMuse");
     }
-    FontEngine::drawText(DisplayTarget::OLED, 0, 8, now, FontStyle::Tiny);
 
-    uint32_t elapsed = (uint32_t)(g_nowProgress * g_nowDuration);
-    char timeStr[32];
+    uint32_t elapsed = static_cast<uint32_t>(g_nowProgress * g_nowDuration);
     char elStr[16], durStr[16];
     format_time(elStr, sizeof(elStr), elapsed);
     format_time(durStr, sizeof(durStr), g_nowDuration);
+    char timeStr[32];
     snprintf(timeStr, sizeof(timeStr), "%s / %s", elStr, durStr);
 
-    // Progress bar outline
-    u8g2.drawFrame(0, 14, 144, 7);
-    if (g_nowProgress > 0.0f) {
-        int filled = (int)(142 * g_nowProgress);
-        if (filled > 0) u8g2.drawBox(1, 15, filled, 5);
+    const char* src = "Library";
+    switch (playlistMgr().source()) {
+    case PlaySource::Library:   src = "Library"; break;
+    case PlaySource::Favorites: src = "Favorites"; break;
+    case PlaySource::Playlist:  src = "Playlist"; break;
     }
+    char srcBuf[64];
+    snprintf(srcBuf, sizeof(srcBuf), "%s [%d]", src, g_trackCount);
 
-    // Time on right side
-    FontEngine::drawText(DisplayTarget::OLED, 152, 20, timeStr, FontStyle::Tiny);
-
-    // Bottom line: source + count
-    String src;
-    switch (g_playlistMgr.source()) {
-        case PlaySource::Library:   src = "Library"; break;
-        case PlaySource::Favorites: src = "Favorites"; break;
-        case PlaySource::Playlist:  src = "Playlist"; break;
-    }
-    char srcBuf[32];
-    snprintf(srcBuf, sizeof(srcBuf), "%s [%d]", src.c_str(), g_trackCount);
-    FontEngine::drawText(DisplayTarget::OLED, 0, 30, srcBuf, FontStyle::Tiny);
-
-    // Volume bar on right side
     int volPct = (g_volume * 100 + 127) / 255;
     char volBuf[16];
-    snprintf(volBuf, sizeof(volBuf), "V:%3d%%", volPct);
-    FontEngine::drawText(DisplayTarget::OLED, 152, 30, volBuf, FontStyle::Tiny);
+    snprintf(volBuf, sizeof(volBuf), "V:%3u%%", volPct);
 
-    u8g2.sendBuffer();
+    // Draw all four lines to the OLED buffer, then send once.
+    pm_oled_clear();
+    pm_text_color(PM_TARGET_OLED, 1);
+    pm_text(PM_TARGET_OLED, 0, 8, now, PM_STYLE_HEADING2);
+    pm_text(PM_TARGET_OLED, 0, 20, timeStr, PM_STYLE_TINY);
+    pm_text(PM_TARGET_OLED, 0, 30, srcBuf, PM_STYLE_TINY);
+    // Volume on the right side of the last line
+    int vol_w = pm_text_width(PM_TARGET_OLED, volBuf, PM_STYLE_TINY);
+    pm_text(PM_TARGET_OLED, 256 - vol_w - 2, 30, volBuf, PM_STYLE_TINY);
+    pm_oled_send();
 }
 
 void ui_show_help() {
-    beginEinkScreen();
+    pm_ui_begin_eink_screen(false);
 
-    FontEngine::drawText(DisplayTarget::EINK, 8, 18,
-                         "PocketMuse Controls", FontStyle::Body);
-    display.drawFastHLine(0, 22, display.width(), GxEPD_BLACK);
+    pm_text_color(PM_TARGET_EINK, 1);
+    pm_text(PM_TARGET_EINK, 8, 18, "PocketMuse Controls", PM_STYLE_BODY);
+    pm_eink_rect(0, 22, pm_eink_width() - 1, 22, false, true);
 
     struct Row { const char* key; const char* desc; };
     Row rows[] = {
-        { "LEFT/RIGHT","Navigate / skip track"       },
-        { "UP/DOWN",  "Volume (Now Playing)"         },
-        { "SPACE",    "Play / pause"                },
-        { "ENTER",    "Select / play"               },
-        { "P",        "Cycle source (Lib/Fav/Pl)"    },
-        { "F",        "Toggle favorite"              },
-        { "S",        "Toggle shuffle"               },
-        { "L",        "Cycle loop (None/One/All)"  },
-        { "D",        "Delete from playlist"         },
-        { "B",        "Back to browser"              },
-        { "?",        "Show this screen"             },
-        { "ESC / A",  "Exit to OS"                   },
+        { "LEFT/RIGHT", "Navigate / skip track"       },
+        { "UP/DOWN",    "Volume (Now Playing)"         },
+        { "SPACE",      "Play / pause"                },
+        { "ENTER",      "Select / play"               },
+        { "P",          "Cycle source (Lib/Fav/Pl)"    },
+        { "F",          "Toggle favorite"              },
+        { "S",          "Toggle shuffle"               },
+        { "L",          "Cycle loop (None/One/All)"    },
+        { "D",          "Delete from playlist"         },
+        { "B",          "Back to browser"              },
+        { "?",          "Show this screen"             },
+        { "ESC / A",    "Exit to OS"                   },
     };
 
     int y = 38;
     for (auto& r : rows) {
-        FontEngine::drawText(DisplayTarget::EINK, 8, y, r.key, FontStyle::Tiny);
-        FontEngine::drawText(DisplayTarget::EINK, 82, y, r.desc, FontStyle::Tiny);
+        pm_text(PM_TARGET_EINK, 8, y, r.key, PM_STYLE_TINY);
+        pm_text(PM_TARGET_EINK, 82, y, r.desc, PM_STYLE_TINY);
         y += 12;
     }
 
-    display.drawFastHLine(0, y + 4, display.width(), GxEPD_BLACK);
-    FontEngine::drawText(DisplayTarget::EINK, 8, y + 16,
-                         "Press any key to close", FontStyle::Tiny);
+    pm_eink_rect(0, y + 4, pm_eink_width() - 1, y + 4, false, true);
+    pm_text(PM_TARGET_EINK, 8, y + 16, "Press any key to close", PM_STYLE_TINY);
 
     draw_footer("PocketMuse help");
-    EINK().refresh();
+    pm_eink_refresh();
 }

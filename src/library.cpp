@@ -1,66 +1,127 @@
 #include "library.h"
-#include <globals.h>
+
+#include "paths.h"
+#include "pm_app_api.h"
+
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <algorithm>
 
-Library::Library() {}
+namespace {
+
+// Snapshot of one directory level while scanning. The host exposes a single
+// live enumeration, so the listing has to be copied before recursing.
+struct Entry {
+    char name[128];
+    bool is_dir;
+};
+constexpr size_t kMaxName = sizeof(Entry::name);
+constexpr size_t kMaxPath = 256;
+
+} // namespace
+
+Library::Library()
+    : tracks_(nullptr), tracks_cap_(0), count_(0) {}
+
+Library::~Library() {
+    clear();
+    std::free(tracks_);
+    tracks_ = nullptr;
+    tracks_cap_ = 0;
+}
 
 void Library::clear() {
-    tracks_.clear();
+    for (int i = 0; i < count_; i++) {
+        std::free((void*)tracks_[i]);
+    }
+    count_ = 0;
 }
 
 int Library::scan() {
     clear();
 
-    if (!global_fs) {
-        return -1;
+    scanDir_(paths::kMusicDir, 0, kMaxDepth);
+    printf("[muse] scan %s -> %d tracks\n", paths::kMusicDir, count_);
+    fflush(stdout);
+
+    if (count_ == 0) {
+        // Cards are often populated at the root instead of /music. One shallow
+        // pass over the root finds those without crawling apps/ and assets/.
+        scanDir_("/", 0, kFallbackDepth);
+        printf("[muse] scan / -> %d tracks\n", count_);
+        fflush(stdout);
     }
 
-    File root = global_fs->open("/music");
-    if (!root || !root.isDirectory()) {
-        return -1;
-    }
-    root.close();
-
-    scanDir_("/music", 0);
-
-    std::sort(tracks_.begin(), tracks_.end(),
-              [](const String& a, const String& b) {
-                  return strcasecmp(a.c_str(), b.c_str()) < 0;
+    std::sort(tracks_, tracks_ + count_,
+              [](const char* a, const char* b) {
+                  return strcasecmp(a, b) < 0;
               });
 
-    return count();
+    return count_;
 }
 
-const String& Library::path(int index) const {
+const char* Library::path(int index) const {
+    if (index < 0 || index >= count_) return nullptr;
     return tracks_[index];
 }
 
-void Library::scanDir_(const char* dirname, int depth) {
-    File dir = global_fs->open(dirname);
-    if (!dir || !dir.isDirectory()) {
-        return;
-    }
+void Library::scanDir_(const char* dirname, int depth, int maxDepth) {
+    if (depth > maxDepth) return;
 
-    File entry = dir.openNextFile();
-    while (entry) {
-        if (entry.isDirectory()) {
-            if (depth + 1 < kMaxDepth) {
-                String sub = String(dirname) + "/" + entry.name();
-                scanDir_(sub.c_str(), depth + 1);
-            }
-        } else {
-            String name = entry.name();
-            if (name.startsWith("._")) {
-                entry = dir.openNextFile();
-                continue;
-            }
-            if (name.endsWith(".mp3") || name.endsWith(".MP3")) {
-                String full = String(dirname) + "/" + name;
-                tracks_.push_back(full);
-            }
+    int count = pm_sd_dir_open(dirname);
+    printf("[muse] dir %s entries=%d\n", dirname, count);
+    fflush(stdout);
+    if (count < 0) return;
+    if (count == 0) { pm_sd_dir_close(); return; }
+
+    // The host keeps exactly one enumeration live, so opening a subdirectory
+    // would clobber this one. Snapshot the listing before recursing.
+    Entry* entries = static_cast<Entry*>(std::malloc(count * sizeof(Entry)));
+    if (!entries) { pm_sd_dir_close(); return; }
+    int found = 0;
+    for (int i = 0; i < count; i++) {
+        if (pm_sd_dir_entry(i, entries[found].name, kMaxName,
+                            &entries[found].is_dir)) {
+            found++;
         }
-        entry = dir.openNextFile();
+    }
+    pm_sd_dir_close();
+
+    for (int i = 0; i < found; i++) {
+        const Entry& e = entries[i];
+        if (e.is_dir) {
+            char sub[kMaxPath];
+            snprintf(sub, sizeof(sub), "%s/%s", dirname, e.name);
+            scanDir_(sub, depth + 1, maxDepth);
+            continue;
+        }
+
+        const char* dot = std::strrchr(e.name, '.');
+        if (!dot || strcasecmp(dot, ".mp3") != 0) continue;
+        if (count_ >= kMaxTracks) break;
+
+        if (count_ >= tracks_cap_) {
+            int new_cap = tracks_cap_ ? tracks_cap_ * 2 : 64;
+            if (new_cap > kMaxTracks) new_cap = kMaxTracks;
+            const char** nt = static_cast<const char**>(
+                std::realloc((void*)tracks_, new_cap * sizeof(const char*)));
+            if (!nt) { std::free(entries); return; }
+            tracks_ = nt;
+            tracks_cap_ = new_cap;
+        }
+
+        size_t len = std::strlen(dirname) + 1 + std::strlen(e.name) + 1;
+        char* full = static_cast<char*>(std::malloc(len));
+        if (!full) { std::free(entries); return; }
+        snprintf(full, len, "%s/%s", dirname, e.name);
+        tracks_[count_++] = full;
     }
 
-    dir.close();
+    std::free(entries);
+}
+
+Library& library() {
+    static Library lib;
+    return lib;
 }

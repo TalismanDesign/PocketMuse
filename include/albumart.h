@@ -1,7 +1,7 @@
 #pragma once
-#include <stdint.h>
-#include <stddef.h>
-#include <FS.h>
+
+#include <cstdint>
+#include <cstddef>
 
 class AlbumArt {
 public:
@@ -12,6 +12,7 @@ public:
     AlbumArt();
     ~AlbumArt();
 
+    // Extract APIC from mp3Path and cache it. Returns true on success.
     bool load(const char* mp3Path);
     void clear();
 
@@ -23,19 +24,14 @@ public:
     int  width() const  { return img_w_; }
     int  height() const { return img_h_; }
 
+    // Render cached art to a 1-bit e-ink buffer at (outX, outY) bounded by
+    // maxSize. Uses pm_image_decode_to_1bit.
     bool render1Bit(uint8_t* einkBuf, int bufW, int bufH,
                     int outX, int outY, int maxSize = kMaxSize);
 
 private:
-    static constexpr const char* kCachePath = "/music/.muse/cache_art.jpg";
-
-    bool ensureMuseDir_();
     bool extractAPIC_(const char* mp3Path);
     bool detectFormat_();
-    bool renderJPEG_(File& file, uint8_t* einkBuf, int bufW, int bufH,
-                     int outX, int outY, int maxSize);
-    bool renderPNG_(File& file, uint8_t* einkBuf, int bufW, int bufH,
-                    int outX, int outY, int maxSize);
 
     Format format_;
     int  img_w_;
