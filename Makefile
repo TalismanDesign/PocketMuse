@@ -21,6 +21,7 @@ APP_SRCS := \
 	src/playlist.cpp \
 	src/metacache.cpp \
 	src/albumart.cpp \
+	src/id3parser.cpp \
 	src/ui_player.cpp \
 	src/ui/ui_browser.cpp \
 	src/ui/ui_nowplaying.cpp \

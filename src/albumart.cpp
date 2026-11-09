@@ -1,184 +1,179 @@
 #include "albumart.h"
 
-#include "paths.h"
+#include <cstdint>
+#include <cstring>
+#include <strings.h>
+
 #include "pm_app_api.h"
 
-#include <cstring>
-#include <cstdlib>
-
-static uint32_t readSyncsafeInt(const uint8_t* buf) {
-    return ((uint32_t)buf[0] << 21) |
-           ((uint32_t)buf[1] << 14) |
-           ((uint32_t)buf[2] <<  7) |
-           (uint32_t)buf[3];
+static uint32_t readSyncsafe(const uint8_t *p) {
+  return ((uint32_t)(p[0] & 0x7f) << 21) | ((uint32_t)(p[1] & 0x7f) << 14) |
+         ((uint32_t)(p[2] & 0x7f) << 7) | ((uint32_t)(p[3] & 0x7f));
 }
 
-AlbumArt::AlbumArt()
-    : format_(kNone), img_w_(0), img_h_(0) {}
-
-AlbumArt::~AlbumArt() {
-    clear();
+static uint32_t be32(const uint8_t *p) {
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) |
+         p[3];
 }
 
-bool AlbumArt::extractAPIC_(const char* mp3Path) {
-    uint8_t hdr10[10];
-    if (!pm_sd_read_binary_file(mp3Path, hdr10, 10)) return false;
-    if (hdr10[0] != 'I' || hdr10[1] != 'D' || hdr10[2] != '3') return false;
-
-    uint8_t ver = hdr10[3];
-    if (ver < 3 || ver > 4) return false;
-
-    uint32_t tagSize = readSyncsafeInt(hdr10 + 6);
-    if (tagSize < 10) return false;
-    // Cap: a sane tag is a few KB; anything larger is corrupt or malicious.
-    constexpr uint32_t kMaxTag = 64 * 1024;
-    if (tagSize > kMaxTag) tagSize = kMaxTag;
-
-    uint8_t flags = hdr10[5];
-
-    // Read the whole tag (10-byte header + body) into a bounded buffer.
-    // pm_sd_read_binary_file reads from the start of the file, so we get the
-    // header again and skip it in the buffer.
-    uint32_t total = 10 + tagSize;
-    uint8_t* data = static_cast<uint8_t*>(std::malloc(total));
-    if (!data) return false;
-    if (!pm_sd_read_binary_file(mp3Path, data, total)) {
-        std::free(data);
-        return false;
-    }
-
-    size_t pos = 10;
-    if (flags & 0x40) {
-        // Extended header
-        if (pos + 4 > tagSize) { std::free(data); return false; }
-        uint32_t extSize = readSyncsafeInt(data + pos);
-        pos += 4 + extSize;
-        if (pos > tagSize) { std::free(data); return false; }
-    }
-
-    bool footer = (ver == 4) && (flags & 0x10);
-    size_t tagEnd = pos + (tagSize - (footer ? 10 : 0));
-    if (tagEnd > tagSize) tagEnd = tagSize;
-
-    // Remove old cache
-    pm_sd_delete_file(paths::kAlbumArt);
-
-    // Scan frames for APIC
-    while (pos + 10 <= tagEnd) {
-        const uint8_t* fhdr = data + pos;
-        char id[5] = {};
-        std::memcpy(id, fhdr, 4);
-        if (id[0] == '\0') break;
-
-        uint32_t fsize;
-        if (ver == 4) {
-            fsize = readSyncsafeInt(fhdr + 4);
-        } else {
-            fsize = ((uint32_t)fhdr[4] << 24 |
-                     (uint32_t)fhdr[5] << 16 |
-                     (uint32_t)fhdr[6] <<  8 |
-                     (uint32_t)fhdr[7]);
-        }
-        pos += 10;
-
-        if (fsize == 0 || pos + fsize > tagEnd) break;
-
-        if (std::strcmp(id, "APIC") != 0) {
-            pos += fsize;
-            continue;
-        }
-
-        // APIC body
-        if (pos >= tagEnd) break;
-        uint8_t encoding = data[pos++];
-        fsize--;
-
-        // Skip MIME type (null-terminated)
-        while (pos < tagEnd && data[pos] != 0) pos++;
-        if (pos >= tagEnd) break;
-        pos++; // skip null
-
-        // Skip description (null-terminated, encoding-dependent)
-        if (encoding == 0x00 || encoding == 0x03) {
-            // Latin1 or UTF-8: null-terminated string
-            while (pos < tagEnd && data[pos] != 0) pos++;
-            if (pos < tagEnd) pos++;
-        } else {
-            // UTF-16: look for 0x0000
-            while (pos + 1 < tagEnd &&
-                   !(data[pos] == 0 && data[pos + 1] == 0)) pos++;
-            pos += 2;
-        }
-
-        if (pos >= tagEnd) break;
-        pos++; // skip picture type byte
-
-        // The rest of the frame is the image data
-        size_t imgDataSize = tagEnd - pos;
-        if (imgDataSize == 0) break;
-
-        // Write image data to cache file
-        if (!pm_sd_write_binary_file(paths::kAlbumArt, data + pos, imgDataSize)) {
-            break;
-        }
-
-        format_ = kJPEG; // tentative
-        break;
-    }
-
-    std::free(data);
-
-    if (format_ == kNone) return false;
-
-    // Detect actual format
-    if (!detectFormat_()) {
-        pm_sd_delete_file(paths::kAlbumArt);
-        format_ = kNone;
-        return false;
-    }
-    return true;
+static bool validFrameId(const uint8_t *id) {
+  for (int i = 0; i < 4; i++)
+    if (!((id[i] >= 'A' && id[i] <= 'Z') || (id[i] >= '0' && id[i] <= '9')))
+      return false;
+  return true;
 }
 
-bool AlbumArt::detectFormat_() {
-    size_t fsize = pm_sd_get_file_size(paths::kAlbumArt);
-    if (fsize < 4) return false;
+static size_t apicPrefix(const uint8_t *b, size_t n, uint8_t *picType, bool *png) {
+  if (n < 4)
+    return 0;
 
-    char magic_buf[4];
-    if (!pm_sd_read_binary_file(paths::kAlbumArt,
-                                reinterpret_cast<uint8_t*>(magic_buf), 4))
-        return false;
+  uint8_t enc = b[0];
+  size_t p = 1;
+  while (p < n && b[p])
+    p++;
+  size_t mimeLen = p - 1;
+  const char *mime = (const char *)b + 1;
+  if (++p >= n)
+    return 0;
+  *picType = b[p++];
 
-    const uint8_t* magic = reinterpret_cast<const uint8_t*>(magic_buf);
-    if (magic[0] == 0xFF && magic[1] == 0xD8) {
-        format_ = kJPEG;
-        return true;
-    }
-    if (magic[0] == 0x89 && magic[1] == 'P' && magic[2] == 'N' && magic[3] == 'G') {
-        format_ = kPNG;
-        return true;
-    }
-    return false;
+  if (enc == 0 || enc == 3) {
+    while (p < n && b[p])
+      p++;
+    p += 1;
+  } else {
+    while (p + 1 < n && (b[p] || b[p + 1]))
+      p += 2;
+    p += 2;
+  }
+
+  if (p > n)
+    return 0; 
+
+  if ((mimeLen == 10 && !strncasecmp(mime, "image/jpeg", 10)) ||
+      (mimeLen == 9 && !strncasecmp(mime, "image/jpg", 9)))
+    *png = false;
+  else if (mimeLen == 9 && !strncasecmp(mime, "image/png", 9))
+    *png = true;
+  else
+    return 0;
+
+  return p;
 }
 
-bool AlbumArt::load(const char* mp3Path) {
-    if (format_ != kNone) clear();
+AlbumArt::AlbumArt() : format_(kNone), img_w_(0), img_h_(0), api_offset_(0), api_size_(0) {}
 
-    // Ensure the state directory exists
-    pm_sd_mkdir(paths::kStateDir);
+AlbumArt::~AlbumArt() {}
 
-    return extractAPIC_(mp3Path);
+bool AlbumArt::load(const char *mp3Path) {
+  clear();
+  return extractAPIC_(mp3Path);
 }
 
 void AlbumArt::clear() {
-    pm_sd_delete_file(paths::kAlbumArt);
-    format_ = kNone;
-    img_w_ = img_h_ = 0;
+  format_ = kNone;
+  img_w_ = img_h_ = 0;
+  api_offset_ = 0;
+  api_size_ = 0;
 }
 
-bool AlbumArt::render1Bit(uint8_t* einkBuf, int bufW, int bufH,
-                          int outX, int outY, int maxSize) {
-    if (format_ == kNone || !einkBuf) return false;
+bool AlbumArt::render1Bit(const char *mp3Path, uint8_t *einkBuf, int bufW, int bufH, int outX,
+                          int outY, int maxSize) {
+  if (format_ == kNone || !einkBuf)
+    return false;
+  return pm_image_decode_region_to_1bit(mp3Path, api_offset_, api_size_, einkBuf, bufW, bufH,
+                                        outX, outY, maxSize, true);
+}
 
-    return pm_image_decode_to_1bit(paths::kAlbumArt, einkBuf, bufW, bufH,
-                                   outX, outY, maxSize);
+bool AlbumArt::extractAPIC_(const char *mp3Path) {
+  int s = pm_sd_stream_open(mp3Path);
+  if (s < 0)
+    return false;
+
+  bool found = false, haveAny = false;
+  uint32_t firstOff = 0, firstLen = 0;
+  bool firstPng = false;
+  uint8_t h[10];
+
+  do {
+    if (pm_sd_stream_read(s, h, 10) != 10 || memcmp(h, "ID3", 3) != 0)
+      break;
+    uint8_t ver = h[3];
+    if (ver != 3 && ver != 4)
+      break; 
+    if (ver == 3 && (h[5] & 0x80))
+      break; 
+
+    uint32_t tagEnd = 10 + readSyncsafe(h + 6);
+    uint32_t pos = 10;
+
+    if (h[5] & 0x40) {
+      uint8_t e[4];
+      if (pm_sd_stream_read(s, e, 4) != 4)
+        break;
+      pos += (ver == 4) ? readSyncsafe(e) : be32(e) + 4;
+    }
+
+    while (pos + 10 <= tagEnd) {
+      if (!pm_sd_stream_seek(s, pos) || pm_sd_stream_read(s, h, 10) != 10)
+        break;
+      if (!validFrameId(h))
+        break; 
+
+      uint32_t fsize = (ver == 4) ? readSyncsafe(h + 4) : be32(h + 4);
+      uint32_t next = pos + 10 + fsize;
+      if (next > tagEnd)
+        break;
+
+      if (fsize && memcmp(h, "APIC", 4) == 0) {
+        uint8_t f = h[9];
+
+        bool unusable = (ver == 4) ? (f & 0x0E) : (f & 0xC0);
+        uint32_t extra = (ver == 4) ? ((f & 0x40) ? 1 : 0) + ((f & 0x01) ? 4 : 0)
+                                    : ((f & 0x20) ? 1 : 0);
+
+        if (!unusable && fsize > extra) {
+          uint32_t body = pos + 10 + extra, bodyLen = fsize - extra;
+          uint8_t b[256];
+          size_t n = bodyLen < sizeof(b) ? bodyLen : sizeof(b);
+          uint8_t type = 0;
+          bool png = false;
+          size_t pre = 0;
+
+          if (pm_sd_stream_seek(s, body) && pm_sd_stream_read(s, b, n) == n)
+            pre = apicPrefix(b, n, &type, &png);
+
+          if (pre && pre < bodyLen) {
+            if (type == 0x03) { 
+              api_offset_ = body + (uint32_t)pre;
+              api_size_ = bodyLen - (uint32_t)pre;
+              format_ = png ? kPNG : kJPEG;
+              found = true;
+              break;
+            }
+
+            if (!haveAny) {
+              firstOff = body + (uint32_t)pre;
+              firstLen = bodyLen - (uint32_t)pre;
+              firstPng = png;
+              haveAny = true;
+            }
+          }
+        }
+      }
+
+      pos = next;
+    }
+
+    if (!found && haveAny) {
+      api_offset_ = firstOff;
+      api_size_ = firstLen;
+      format_ = firstPng ? kPNG : kJPEG;
+      found = true;
+    }
+
+  } while (0);
+
+  pm_sd_stream_close(s);
+  return found;
 }
