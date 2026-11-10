@@ -20,11 +20,14 @@ public:
   PlaylistCursor();
   ~PlaylistCursor();
 
+  /** Load path offsets, accepting an empty or absent list as empty.
+   * Return false on invalid paths, allocation failure, or nonempty-file read failure.
+   */
   bool load(const char *path, bool isFav);
   void unload();
 
   int count() const { return count_; }
-  bool valid() const { return offsets_ != nullptr; }
+  bool valid() const { return path_[0] != '\0'; }
 
   bool getEntry(int index, char *pathBuf, size_t bufSize) const;
 
@@ -57,7 +60,9 @@ public:
   int playlistIndex() const { return pl_index_; }
 
   bool playLibrary();
+  /** Select Favorites, including an empty list; return false on a read failure. */
   bool playFavorites();
+  /** Select playlist idx; failed reads preserve metadata for retry and return false. */
   bool playPlaylist(int idx);
 
   int entryCount() const;

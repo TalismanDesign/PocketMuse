@@ -1,5 +1,4 @@
 #include "library.h"
-#include "metacache.h"
 #include "muse.h"
 #include "playlist.h"
 #include "ui_helpers.h"
@@ -11,20 +10,20 @@
 #include <cstdlib>
 #include <cstring>
 
-extern "C" int atexit(void (*func)(void)) {
-  (void)func;
-  return 0;
+static bool exit_key(char ch) {
+  return ch == PM_KEY_ESCAPE || ch == PM_KEY_ASCII_ESCAPE || ch == 'A';
 }
 
-static constexpr char kKeyExit1 = 12;
-static constexpr char kKeyExit2 = 27;
-static constexpr char kKeyExit3 = 65;
-
 static void process_key(char ch) {
-  if (ch == kKeyExit1 || ch == kKeyExit2 || ch == kKeyExit3) {
+  if (exit_key(ch)) {
     music_stop();
     g_appMode = MODE_BROWSER;
     return; 
+  }
+
+  if (g_appMode != MODE_HELP && (ch == 'u' || ch == 'U')) {
+    player_cycle_sink();
+    return;
   }
 
   switch (g_appMode) {
@@ -45,9 +44,11 @@ static void process_key(char ch) {
 }
 
 extern "C" int main(int argc, char **argv) {
+  (void)argc;
+  (void)argv;
   if (pm_app_abi() != PM_APP_API_ABI) {
     printf("PocketMuse: host ABI mismatch: app %u, host %u\n", PM_APP_API_ABI,
-           pm_app_abi());
+           static_cast<unsigned>(pm_app_abi()));
     pm_oled_sysmsg("SDK ABI mismatch", 2000);
     return 1;
   }
@@ -55,11 +56,14 @@ extern "C" int main(int argc, char **argv) {
   printf("PocketMuse starting (SDK %s)\n", PM_SDK_VERSION);
 
   pm_audio_begin();
-  pm_audio_set_volume(static_cast<int8_t>((g_volume * 16) / 255 - 8));
 
   pm_oled_init();
 
-  playlistMgr().begin();
+  if (!playlistMgr().begin()) {
+    pm_oled_sysmsg("Music storage unavailable", 1200);
+    pm_audio_stop();
+    return 1;
+  }
 
   library().scan();
   g_trackCount = library().count();
@@ -72,70 +76,29 @@ extern "C" int main(int argc, char **argv) {
     char ch = pm_kb_read();
     if (ch) {
       process_key(ch);
-      if (ch == kKeyExit1 || ch == kKeyExit2 || ch == kKeyExit3) {
+      pm_activity();
+      if (exit_key(ch)) {
         exit_requested = true;
+        break;
       }
     }
 
     int scrollVec = pm_touch_get_scroll_vector();
-    if (scrollVec > 0 && g_volume < 245) {
-      g_volume += 10;
-      if (g_volume > 255) g_volume = 255;
-      pm_audio_set_volume(static_cast<int8_t>((g_volume * 16) / 255 - 8));
-      g_needsRedraw = true;
-    } else if (scrollVec < 0 && g_volume > 10) {
-      g_volume -= 10;
-      if (g_volume < 0) g_volume = 0;
-      pm_audio_set_volume(static_cast<int8_t>((g_volume * 16) / 255 - 8));
-      g_needsRedraw = true;
+    if (scrollVec != 0) {
+      pm_activity();
+      if (scrollVec > 0 ? player_volume_up() : player_volume_down())
+        g_needsRedraw = true;
     }
 
+    player_poll();
+
+    static bool s_usbActive = false;
+    bool usbActive = player_sink_is_usb_active();
+    if (usbActive != s_usbActive) {
+      s_usbActive = usbActive;
+      g_needsRedraw = true;
+    }
     ui_update_oled();
-
-    if (g_nowPath[0] && pm_audio_is_playing()) {
-      if (g_nowFileSize > 0) {
-        g_nowProgress = static_cast<float>(pm_audio_get_position()) /
-                        static_cast<float>(g_nowFileSize);
-        if (g_nowProgress > 1.0f)
-          g_nowProgress = 1.0f;
-      }
-    }
-
-    static bool g_wasPlaying = false;
-    bool isPlaying = pm_audio_is_playing();
-    if (g_wasPlaying && !isPlaying && g_nowTrackIndex >= 0 && g_nowPath[0] &&
-        g_nowProgress >= 0.99f) {
-      int n = g_trackCount > 0 ? g_trackCount : 1;
-      int next = -1;
-      switch (g_loopMode) {
-      case LoopMode::None:
-        break;
-      case LoopMode::One:
-        next = g_nowTrackIndex; 
-        break;
-      case LoopMode::All:
-        next = g_nowTrackIndex + 1;
-        if (next >= n)
-          next = 0;
-        break;
-      }
-      if (next >= 0 && next < n) {
-        player_play_index(next);
-      } else {
-        music_stop();
-        g_playState = PlayerState::Stopped;
-        g_nowPath[0] = '\0';
-      }
-    }
-    g_wasPlaying = isPlaying;
-
-    if (pm_audio_is_playing()) {
-      g_playState = PlayerState::Playing;
-    } else if (g_nowTrackIndex >= 0 && g_nowPath[0]) {
-      g_playState = PlayerState::Paused;
-    } else {
-      g_playState = PlayerState::Stopped;
-    }
 
     if (g_needsRedraw) {
       g_needsRedraw = false;

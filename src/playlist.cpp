@@ -6,10 +6,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 static char *readTextFile(const char *path, size_t *outSize) {
   size_t fsize = pm_sd_get_file_size(path);
-  if (fsize == 0)
+  if (fsize == 0 || fsize >= UINT32_MAX)
     return nullptr;
   char *buf = static_cast<char *>(std::malloc(fsize + 1));
   if (!buf)
@@ -24,10 +25,80 @@ static char *readTextFile(const char *path, size_t *outSize) {
   return buf;
 }
 
-static void trimCRLF(char *buf) {
-  size_t len = std::strlen(buf);
-  while (len > 0 && (buf[len - 1] == '\r' || buf[len - 1] == '\n'))
-    buf[--len] = '\0';
+static constexpr size_t kPathCapacity = 256;
+static constexpr char kM3UHeader[] = "#EXTM3U\n";
+
+// Counting, lookup and deletion share the same definition of a visible entry.
+static bool nextEntry(const char *data, size_t size, size_t &pos,
+                      size_t &start, size_t &length) {
+  while (pos < size) {
+    start = pos;
+    while (pos < size && data[pos] != '\n' && data[pos] != '\r')
+      ++pos;
+    length = pos - start;
+    while (pos < size && (data[pos] == '\n' || data[pos] == '\r'))
+      ++pos;
+    size_t first = start;
+    while (first < start + length &&
+           (data[first] == ' ' || data[first] == '\t'))
+      ++first;
+    if (first == start + length || data[first] == '#' ||
+        length >= kPathCapacity || std::memchr(data + start, '\0', length))
+      continue;
+    return true;
+  }
+  return false;
+}
+
+static bool validPath(const char *path) {
+  return path && path[0] == '/' && std::strlen(path) < kPathCapacity &&
+         !std::strchr(path, '\r') && !std::strchr(path, '\n');
+}
+
+static bool rewriteEntries(const char *file, int removeIndex,
+                           const char *removePath, const char *appendPath,
+                           bool m3u) {
+  size_t size = pm_sd_get_file_size(file);
+  char *data = size ? readTextFile(file, &size) : nullptr;
+  if (size && !data)
+    return false;
+  size_t extra = (appendPath ? std::strlen(appendPath) : 0) + sizeof(kM3UHeader) + 2;
+  if (size > std::numeric_limits<size_t>::max() - extra) {
+    std::free(data);
+    return false;
+  }
+  char *result = static_cast<char *>(std::malloc(size + extra));
+  if (!result) {
+    std::free(data);
+    return false;
+  }
+  size_t used = 0;
+  if (m3u) {
+    used = sizeof(kM3UHeader) - 1;
+    std::memcpy(result, kM3UHeader, used);
+  }
+  size_t pos = 0, start = 0, length = 0;
+  int index = 0;
+  while (nextEntry(data, size, pos, start, length)) {
+    bool remove = index++ == removeIndex ||
+                  (removePath && length == std::strlen(removePath) &&
+                   std::memcmp(data + start, removePath, length) == 0);
+    if (remove)
+      continue;
+    std::memcpy(result + used, data + start, length);
+    used += length;
+    result[used++] = '\n';
+  }
+  if (appendPath) {
+    size_t length = std::strlen(appendPath);
+    std::memcpy(result + used, appendPath, length);
+    used += length;
+    result[used++] = '\n';
+  }
+  bool ok = pm_sd_write_binary_file(file, reinterpret_cast<const uint8_t *>(result), used);
+  std::free(result);
+  std::free(data);
+  return ok;
 }
 
 
@@ -47,6 +118,12 @@ void PlaylistCursor::unload() {
 
 bool PlaylistCursor::load(const char *path, bool isFav) {
   unload();
+  if (!validPath(path))
+    return false;
+  if (pm_sd_get_file_size(path) == 0) {
+    std::strcpy(path_, path);
+    return true;
+  }
   size_t fsize = 0;
   char *data = readTextFile(path, &fsize);
   if (!data)
@@ -55,7 +132,7 @@ bool PlaylistCursor::load(const char *path, bool isFav) {
   bool ok = isFav ? parseFavs_(data, fsize) : parseM3U_(data, fsize);
   std::free(data);
 
-  if (!ok || count_ == 0) {
+  if (!ok) {
     unload();
     return false;
   }
@@ -66,6 +143,8 @@ bool PlaylistCursor::load(const char *path, bool isFav) {
 }
 
 bool PlaylistCursor::getEntry(int index, char *pathBuf, size_t bufSize) const {
+  if (pathBuf && bufSize)
+    pathBuf[0] = '\0';
   if (!valid() || index < 0 || index >= count_ || !pathBuf || bufSize == 0)
     return false;
 
@@ -74,16 +153,21 @@ bool PlaylistCursor::getEntry(int index, char *pathBuf, size_t bufSize) const {
   if (!data)
     return false;
 
-  uint32_t off = offsets_[index];
-  uint32_t end = off;
+  size_t off = offsets_[index];
+  if (off >= fsize || fsize != file_size_) {
+    std::free(data);
+    return false;
+  }
+  size_t end = off;
   while (end < fsize && data[end] != '\n' && data[end] != '\r')
     end++;
   size_t copyLen = static_cast<size_t>(end - off);
-  if (copyLen >= bufSize)
-    copyLen = bufSize - 1;
+  if (copyLen >= bufSize) {
+    std::free(data);
+    return false;
+  }
   std::memcpy(pathBuf, data + off, copyLen);
   pathBuf[copyLen] = '\0';
-  trimCRLF(pathBuf);
   std::free(data);
 
   return pathBuf[0] != '\0';
@@ -95,23 +179,14 @@ bool PlaylistCursor::parseM3U_(const char *data, size_t size) {
   if (!off)
     return false;
   int n = 0;
-  uint32_t pos = 0;
-
-  while (pos < size) {
-    uint32_t lineStart = pos;
-    while (pos < size && data[pos] != '\n')
-      pos++;
-    if (pos < size)
-      pos++;
-
-    size_t lineLen = pos - lineStart;
-    if (lineLen == 0)
-      continue;
-
-    if (data[lineStart] == '#')
-      continue;
-
+  size_t pos = 0, lineStart = 0, length = 0;
+  while (nextEntry(data, size, pos, lineStart, length)) {
     if (n >= cap) {
+      if (cap > std::numeric_limits<int>::max() / 2 ||
+          static_cast<size_t>(cap) > SIZE_MAX / (2 * sizeof(uint32_t))) {
+        std::free(off);
+        return false;
+      }
       cap *= 2;
       uint32_t *nf =
           static_cast<uint32_t *>(std::malloc(cap * sizeof(uint32_t)));
@@ -123,15 +198,16 @@ bool PlaylistCursor::parseM3U_(const char *data, size_t size) {
       std::free(off);
       off = nf;
     }
-    off[n++] = lineStart;
+    off[n++] = static_cast<uint32_t>(lineStart);
   }
 
   if (n == 0) {
     std::free(off);
-    return false;
+    off = nullptr;
   }
   count_ = n;
   offsets_ = off;
+  file_size_ = static_cast<uint32_t>(size);
   return true;
 }
 
@@ -215,29 +291,20 @@ bool PlaylistManager::playLibrary() {
 }
 
 bool PlaylistManager::playFavorites() {
-  if (!cursor_.load(paths::kFavorites, true))
-    return false;
   source_ = PlaySource::Favorites;
   pl_index_ = -1;
-  return true;
+  return cursor_.load(paths::kFavorites, true);
 }
 
 bool PlaylistManager::playPlaylist(int idx) {
   if (idx < 0 || idx >= playlist_count_)
     return false;
 
-  cursor_.unload();
-  if (!cursor_.load(playlists_[idx].filename, false)) {
-    for (int i = idx; i < playlist_count_ - 1; i++)
-      playlists_[i] = playlists_[i + 1];
-    playlist_count_--;
-    return false;
-  }
-
   source_ = PlaySource::Playlist;
-  playlists_[idx].count = cursor_.count();
   pl_index_ = idx;
-  return true;
+  bool loaded = cursor_.load(playlists_[idx].filename, false);
+  playlists_[idx].count = loaded ? cursor_.count() : -1;
+  return loaded;
 }
 
 int PlaylistManager::entryCount() const {
@@ -251,88 +318,36 @@ bool PlaylistManager::getEntry(int index, char *pathBuf, size_t bufSize) {
 }
 
 bool PlaylistManager::toggleFavorite(const char *path) {
+  if (!validPath(path))
+    return false;
   bool wasFav = isFavorite(path);
-  if (wasFav) {
-    size_t fsize = 0;
-    char *data = readTextFile(paths::kFavorites, &fsize);
-    if (!data)
-      return true;
-
-    char *result = static_cast<char *>(std::malloc(fsize + 1));
-    if (!result) {
-      std::free(data);
-      return true;
-    }
-    size_t result_len = 0;
-
-    const char *p = data;
-    bool found = false;
-    while (*p) {
-      const char *nl = std::strchr(p, '\n');
-      size_t linelen = nl ? static_cast<size_t>(nl - p) : std::strlen(p);
-      bool match =
-          (linelen == std::strlen(path) && std::memcmp(p, path, linelen) == 0);
-      if (match) {
-        found = true;
-      } else {
-        if (result_len + linelen + 1 <= fsize) {
-          std::memcpy(result + result_len, p, linelen);
-          result_len += linelen;
-          result[result_len++] = '\n';
-        }
-      }
-      if (!nl)
-        break;
-      p = nl + 1;
-    }
-    std::free(data);
-
-    if (!found) {
-      std::free(result);
-      return true;
-    }
-
-    result[result_len] = '\0';
-    pm_sd_write_binary_file(paths::kFavorites,
-                            reinterpret_cast<const uint8_t *>(result),
-                            result_len);
-    std::free(result);
-
-    if (source_ == PlaySource::Favorites) {
-      cursor_.unload();
-      cursor_.load(paths::kFavorites, true);
-    }
-  } else {
-    char line[256];
-    snprintf(line, sizeof(line), "%s\n", path);
-    pm_sd_append_file(paths::kFavorites, line);
-  }
+  if (!rewriteEntries(paths::kFavorites, -1, wasFav ? path : nullptr,
+                      wasFav ? nullptr : path, false))
+    return wasFav;
 
   if (source_ == PlaySource::Favorites) {
-    cursor_.unload();
+    // An empty favorites file leaves an empty cursor in the same view.
     cursor_.load(paths::kFavorites, true);
   }
   return !wasFav;
 }
 
 bool PlaylistManager::isFavorite(const char *path) {
+  if (!validPath(path))
+    return false;
   size_t fsize = 0;
   char *data = readTextFile(paths::kFavorites, &fsize);
   if (!data)
     return false;
 
-  const char *p = data;
   bool found = false;
-  while (*p) {
-    const char *nl = std::strchr(p, '\n');
-    size_t linelen = nl ? static_cast<size_t>(nl - p) : std::strlen(p);
-    if (linelen == std::strlen(path) && std::memcmp(p, path, linelen) == 0) {
+  size_t pathLen = std::strlen(path);
+  size_t pos = 0, start = 0, length = 0;
+  while (nextEntry(data, fsize, pos, start, length)) {
+    if (length == pathLen && std::memcmp(data + start, path, length) == 0) {
       found = true;
       break;
     }
-    if (!nl)
-      break;
-    p = nl + 1;
   }
   std::free(data);
   return found;
@@ -345,25 +360,19 @@ int PlaylistManager::favoriteCount() {
     return 0;
 
   int count = 0;
-  const char *p = data;
-  while (*p) {
-    const char *nl = std::strchr(p, '\n');
-    if (!nl)
-      break;
-    p = nl + 1;
-    count++;
-  }
+  size_t pos = 0, start = 0, length = 0;
+  while (nextEntry(data, fsize, pos, start, length))
+    ++count;
   std::free(data);
   return count;
 }
 
 bool PlaylistManager::addToPlaylist(int plIdx, const char *songPath) {
-  if (plIdx < 0 || plIdx >= playlist_count_)
+  if (plIdx < 0 || plIdx >= playlist_count_ || !validPath(songPath))
     return false;
 
-  char line[256];
-  snprintf(line, sizeof(line), "%s\n", songPath);
-  pm_sd_append_file(playlists_[plIdx].filename, line);
+  if (!rewriteEntries(playlists_[plIdx].filename, -1, nullptr, songPath, true))
+    return false;
 
   if (source_ == PlaySource::Playlist && pl_index_ == plIdx) {
     cursor_.unload();
@@ -388,41 +397,8 @@ bool PlaylistManager::removeFromPlaylist(int plIdx, int entryIndex) {
     return false;
   }
 
-  size_t fsize = 0;
-  char *data = readTextFile(playlists_[plIdx].filename, &fsize);
-  if (!data) {
-    tmp.unload();
+  if (!rewriteEntries(playlists_[plIdx].filename, entryIndex, nullptr, nullptr, true))
     return false;
-  }
-
-  char result[4096];
-  size_t result_len = 0;
-  std::memcpy(result, "#EXTM3U\n", 8);
-  result_len = 8;
-
-  const char *p = data;
-  int idx = 0;
-  while (*p) {
-    const char *nl = std::strchr(p, '\n');
-    size_t linelen = nl ? static_cast<size_t>(nl - p) : std::strlen(p);
-    if (idx != entryIndex && linelen > 0 && p[0] != '#') {
-      if (result_len + linelen + 1 < sizeof(result)) {
-        std::memcpy(result + result_len, p, linelen);
-        result_len += linelen;
-        result[result_len++] = '\n';
-      }
-    }
-    if (!nl)
-      break;
-    p = nl + 1;
-    idx++;
-  }
-  std::free(data);
-
-  result[result_len] = '\0';
-  pm_sd_write_binary_file(playlists_[plIdx].filename,
-                          reinterpret_cast<const uint8_t *>(result),
-                          result_len);
 
   tmp.unload();
   if (source_ == PlaySource::Playlist && pl_index_ == plIdx) {

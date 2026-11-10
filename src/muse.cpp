@@ -12,11 +12,10 @@ char g_nowArtist[128] = {};
 char g_nowAlbum[128] = {};
 uint32_t g_nowDuration = 0;
 float g_nowProgress = 0.0f;
-size_t g_nowFileSize = 0;
+uint32_t g_nowElapsed = 0;
 int g_nowTrackIndex = -1;
 bool g_isFavorite = false;
 PlayerState g_playState = PlayerState::Stopped;
 
 LoopMode g_loopMode = LoopMode::None;
 bool g_shuffleEnabled = false;
-uint8_t g_volume = 200;

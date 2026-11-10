@@ -1,6 +1,7 @@
 #include "muse.h"
 #include "playlist.h"
 #include "ui_helpers.h"
+#include "ui_player.h"
 
 #include "pm_app_api.h"
 
@@ -18,7 +19,7 @@ void playlist_process_key(char ch) {
   int n = g_trackCount;
 
   switch (ch) {
-  case 19: // LEFT
+  case PM_KEY_LEFT:
     if (g_selIndex > 0) {
       g_selIndex--;
       if (g_selIndex < g_plScroll)
@@ -26,7 +27,7 @@ void playlist_process_key(char ch) {
       g_needsRedraw = true;
     }
     break;
-  case 21: // RIGHT
+  case PM_KEY_RIGHT:
     if (g_selIndex < n - 1) {
       g_selIndex++;
       if (g_selIndex >= g_plScroll + kMaxVis)
@@ -34,25 +35,17 @@ void playlist_process_key(char ch) {
       g_needsRedraw = true;
     }
     break;
-  case 32:
-  case 13: // Space or Enter
+  case PM_KEY_SPACE:
+  case PM_KEY_ENTER:
     if (n > 0 && g_selIndex < n) {
       player_play_index(g_selIndex);
     }
     break;
   case 'd':
   case 'D':
-    if (playlistMgr().source() == PlaySource::Playlist) {
-      int pi = playlistMgr().playlistIndex();
-      int idx = g_selIndex;
-      if (idx < g_trackCount) {
-        playlistMgr().removeFromPlaylist(pi, idx);
-        g_trackCount = playlistMgr().entryCount();
-        if (g_selIndex >= g_trackCount && g_selIndex > 0)
-          g_selIndex--;
-        g_needsRedraw = true;
-      }
-    }
+    player_remove_selected();
+    if (g_selIndex < g_plScroll)
+      g_plScroll = g_selIndex;
     break;
   case 'b':
   case 'B':
@@ -74,20 +67,13 @@ void playlist_process_key(char ch) {
 void playlist_render() {
   pm_ui_begin_eink_screen(false);
 
-  const char *srcName = "";
-  if (playlistMgr().source() == PlaySource::Playlist) {
-    int pi = playlistMgr().playlistIndex();
-    if (pi >= 0)
-      srcName = playlistMgr().playlistMeta(pi).name;
-  }
-
-  char hdr[64];
-  snprintf(hdr, sizeof(hdr), "Playlist: %s  [%d]", srcName, g_trackCount);
+  char hdr[96];
+  snprintf(hdr, sizeof(hdr), "%s  [%d]", source_label(), g_trackCount);
   draw_header(hdr);
 
   int n = g_trackCount;
   if (n == 0) {
-    pm_text(PM_TARGET_EINK, 8, 80, "Playlist is empty", PM_STYLE_BODY);
+    draw_empty_source();
     draw_footer("B:back ?:help");
     pm_eink_refresh();
     return;
@@ -106,12 +92,14 @@ void playlist_render() {
   int w = pm_eink_width();
 
   for (int i = g_plScroll; i < end; i++) {
-    char path[256];
+    char path[256] = {};
     char label[56];
-    get_track_path(i, path, sizeof(path));
-    get_display_name(path, label, sizeof(label));
+    if (get_track_path(i, path, sizeof(path)))
+      get_display_name(path, label, sizeof(label));
+    else
+      std::strcpy(label, "Unavailable track");
 
-    char prefix[8];
+    char prefix[16];
     snprintf(prefix, sizeof(prefix), "%2d.", i + 1);
     char row[96];
     snprintf(row, sizeof(row), "%s %s", prefix, label);
@@ -127,8 +115,8 @@ void playlist_render() {
     }
     pm_text(PM_TARGET_EINK, 8, y, row, PM_STYLE_TINY);
 
-    if (i == g_nowTrackIndex && g_playState != PlayerState::Stopped) {
-      pm_text(PM_TARGET_EINK, w - 22, y, ">", PM_STYLE_TINY);
+    if (std::strcmp(path, g_nowPath) == 0 && g_playState != PlayerState::Stopped) {
+      draw_transport_icon_eink(w - 22, y - 7, 7, g_playState);
     }
 
     y += kItemH;

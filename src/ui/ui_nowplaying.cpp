@@ -1,6 +1,6 @@
-#include "albumart.h"
 #include "muse.h"
 #include "ui_helpers.h"
+#include "ui_player.h"
 
 #include "pm_app_api.h"
 
@@ -26,8 +26,8 @@ void nowplaying_process_key(char ch) {
   int n = g_trackCount > 0 ? g_trackCount : 1;
 
   switch (ch) {
-  case 32:
-  case 13: 
+  case PM_KEY_SPACE:
+  case PM_KEY_ENTER:
     if (g_playState == PlayerState::Playing) {
       music_pause();
       g_playState = PlayerState::Paused;
@@ -41,30 +41,22 @@ void nowplaying_process_key(char ch) {
     }
     g_needsRedraw = true;
     break;
-  case 19: // LEFT: prev track
+  case PM_KEY_LEFT:
     if (n > 0)
       player_prev_track();
     g_needsRedraw = true;
     break;
-  case 21: // RIGHT: next track
+  case PM_KEY_RIGHT:
     if (n > 0)
       player_next_track();
     g_needsRedraw = true;
     break;
-  case 24: // UP: increase volume
-    if (g_volume < 245)
-      g_volume += 10;
-    else
-      g_volume = 255;
-    pm_audio_set_volume(static_cast<int8_t>((g_volume * 16) / 255 - 8));
+  case PM_KEY_UP:
+    player_volume_up();
     g_needsRedraw = true;
     break;
-  case 25: // DOWN: decrease volume
-    if (g_volume > 10)
-      g_volume -= 10;
-    else
-      g_volume = 0;
-    pm_audio_set_volume(static_cast<int8_t>((g_volume * 16) / 255 - 8));
+  case PM_KEY_DOWN:
+    player_volume_down();
     g_needsRedraw = true;
     break;
   case 'b':
@@ -80,34 +72,17 @@ void nowplaying_process_key(char ch) {
     }
     break;
   case 'f':
-  case 'F': {
-    if (g_nowPath[0]) {
-      g_isFavorite = playlistMgr().toggleFavorite(g_nowPath);
-    }
-    g_needsRedraw = true;
+  case 'F':
+    player_toggle_favorite();
     break;
-  }
   case 's':
   case 'S':
-    g_shuffleEnabled = !g_shuffleEnabled;
-    g_needsRedraw = true;
+    player_toggle_shuffle();
     break;
   case 'l':
-  case 'L': {
-    switch (g_loopMode) {
-    case LoopMode::None:
-      g_loopMode = LoopMode::One;
-      break;
-    case LoopMode::One:
-      g_loopMode = LoopMode::All;
-      break;
-    case LoopMode::All:
-      g_loopMode = LoopMode::None;
-      break;
-    }
-    g_needsRedraw = true;
+  case 'L':
+    player_cycle_loop_mode();
     break;
-  }
   case '?':
     g_prevMode = g_appMode;
     g_appMode = MODE_HELP;
@@ -116,26 +91,35 @@ void nowplaying_process_key(char ch) {
   }
 }
 
-void nowplaying_cache_art(const char *path) {
+void nowplaying_cache_art(const char *path, const pm_media_info &info) {
   s_cachedW = 0;
   s_cachedH = 0;
   s_artCachePath[0] = '\0';
 
-  if (!path || !path[0])
-    return;
-
-  AlbumArt art;
-  if (!art.load(path))
+  if (!path || !path[0] || !info.coverLength)
     return;
 
   std::memset(s_artCache, 0, sizeof(s_artCache));
 
-  if (art.render1Bit(path, s_artCache, kArtSize, kArtSize, 0, 0, kArtSize)) {
+  if (pm_image_decode_region_to_1bit(path, info.coverOffset, info.coverLength, s_artCache,
+                                     kArtSize, kArtSize, 0, 0, kArtSize, true)) {
     s_cachedW = kArtSize;
     s_cachedH = kArtSize;
     std::strncpy(s_artCachePath, path, sizeof(s_artCachePath) - 1);
     s_artCachePath[sizeof(s_artCachePath) - 1] = '\0';
   }
+}
+
+// Draw a small outlined chip with a centered label. Returns the x just past
+// the chip so chips can be laid out left-to-right.
+static int draw_chip(int x, int y, const char *label) {
+  const int padX = 4;
+  const int chipH = 14;
+  int textW = pm_text_width(PM_TARGET_EINK, label, PM_STYLE_TINY);
+  int chipW = textW + padX * 2;
+  pm_eink_rect(x, y, x + chipW, y + chipH, false, true);
+  pm_text(PM_TARGET_EINK, x + padX, y + chipH - 4, label, PM_STYLE_TINY);
+  return x + chipW + 4;
 }
 
 void nowplaying_render() {
@@ -151,14 +135,13 @@ void nowplaying_render() {
     return;
   }
 
-  char hdr[32];
-  if (g_playState == PlayerState::Playing) {
-    snprintf(hdr, sizeof(hdr), "Now Playing");
-  } else if (g_playState == PlayerState::Paused) {
-    snprintf(hdr, sizeof(hdr), "Paused");
-  } else {
-    snprintf(hdr, sizeof(hdr), "Stopped");
-  }
+  const char *hdr;
+  if (g_playState == PlayerState::Playing)
+    hdr = "Now Playing";
+  else if (g_playState == PlayerState::Paused)
+    hdr = "Paused";
+  else
+    hdr = "Stopped";
   draw_header(hdr);
 
   bool artDrawn = false;
@@ -180,78 +163,86 @@ void nowplaying_render() {
     pm_text(PM_TARGET_EINK, kArtX + 32, kArtY + 64, "No Art", PM_STYLE_TINY);
   }
 
-  char buf[128];
-
-  truncate_text(g_nowTitle, buf, sizeof(buf));
-  pm_text(PM_TARGET_EINK, kInfoX, kArtY + 18, buf, PM_STYLE_BODY);
-
-  truncate_text(g_nowArtist, buf, sizeof(buf));
-  if (buf[0]) {
-    pm_text(PM_TARGET_EINK, kInfoX, kArtY + 40, buf, PM_STYLE_BODY);
+  // Title wraps up to two lines inside the info column; drop the rest. The
+  // wrapper measures against e-ink metrics, which is the target here.
+  int y = kArtY + 14;
+  const int kTitleLineH = 18;
+  int lineCount = pm_layout_word_wrap_count(g_nowTitle, kInfoW, PM_STYLE_BODY);
+  int maxTitleLines = 2;
+  for (int i = 0; i < lineCount && i < maxTitleLines; i++) {
+    char line[128];
+    int n = pm_layout_word_wrap_get(g_nowTitle, kInfoW, PM_STYLE_BODY, i, line,
+                                    sizeof(line));
+    if (n < 0)
+      break;
+    // If the title is longer than two lines, mark the truncated second line.
+    if (i == maxTitleLines - 1 && lineCount > maxTitleLines) {
+      char tail[132];
+      snprintf(tail, sizeof(tail), "%s...", line);
+      const char *trunc = pm_layout_truncate_with_ellipsis(
+          tail, kInfoW, PM_STYLE_BODY, PM_TARGET_EINK);
+      pm_text(PM_TARGET_EINK, kInfoX, y, trunc, PM_STYLE_BODY);
+    } else {
+      pm_text(PM_TARGET_EINK, kInfoX, y, line, PM_STYLE_BODY);
+    }
+    y += kTitleLineH;
   }
 
-  truncate_text(g_nowAlbum, buf, sizeof(buf));
-  if (buf[0]) {
-    pm_text(PM_TARGET_EINK, kInfoX, kArtY + 60, buf, PM_STYLE_BODY);
+  y += 4;
+  if (g_nowArtist[0]) {
+    const char *artist = pm_layout_truncate_with_ellipsis(
+        g_nowArtist, kInfoW, PM_STYLE_SMALL, PM_TARGET_EINK);
+    pm_text(PM_TARGET_EINK, kInfoX, y, artist, PM_STYLE_SMALL);
+    y += 16;
+  }
+  if (g_nowAlbum[0]) {
+    const char *album = pm_layout_truncate_with_ellipsis(
+        g_nowAlbum, kInfoW, PM_STYLE_SMALL, PM_TARGET_EINK);
+    pm_text(PM_TARGET_EINK, kInfoX, y, album, PM_STYLE_SMALL);
+    y += 16;
   }
 
-  int statusY = kArtY + 82;
-  int col = kInfoX;
-  if (g_isFavorite) {
-    pm_text(PM_TARGET_EINK, col, statusY, "Fav", PM_STYLE_TINY);
-    col += 40;
-  }
-  switch (g_loopMode) {
-  case LoopMode::None:
-    break;
-  case LoopMode::One:
-    pm_text(PM_TARGET_EINK, col, statusY, "R1", PM_STYLE_TINY);
-    col += 35;
-    break;
-  case LoopMode::All:
-    pm_text(PM_TARGET_EINK, col, statusY, "RA", PM_STYLE_TINY);
-    col += 35;
-    break;
-  }
-  if (g_shuffleEnabled) {
-    pm_text(PM_TARGET_EINK, col, statusY, "Sf", PM_STYLE_TINY);
-    col += 30;
-  }
+  // Transport glyph + label just under the metadata.
+  y += 6;
+  draw_transport_icon_eink(kInfoX, y - 10, 10, g_playState);
+  const char *playStatus;
+  if (g_playState == PlayerState::Playing)
+    playStatus = "Playing";
+  else if (g_playState == PlayerState::Paused)
+    playStatus = "Paused";
+  else
+    playStatus = "Stopped";
+  pm_text(PM_TARGET_EINK, kInfoX + 16, y, playStatus, PM_STYLE_SMALL);
+
+  // Bottom band: source label at the left, status chips, volume at the right.
+  int bandY = pm_eink_height() - 40;
+  pm_eink_rect(0, bandY - 6, pm_eink_width() - 1, bandY - 6, false, true);
 
   char volBuf[16];
-  snprintf(volBuf, sizeof(volBuf), "V:%u", (g_volume * 100 + 127) / 255);
-  pm_text(PM_TARGET_EINK, col, statusY, volBuf, PM_STYLE_TINY);
-
-  int playStatusY = statusY + 16;
-  const char *playStatus;
-  if (g_playState == PlayerState::Playing) {
-    playStatus = "> Playing";
-  } else if (g_playState == PlayerState::Paused) {
-    playStatus = "|| Paused";
-  } else {
-    playStatus = "[] Stopped";
+  snprintf(volBuf, sizeof(volBuf), "Vol %d%%", (pm_audio_get_volume_level() * 100 + 127) / 255);
+  int volW = pm_text_width(PM_TARGET_EINK, volBuf, PM_STYLE_SMALL);
+  int volX = pm_eink_width() - 8 - volW;
+  const char *chips[] = {g_isFavorite ? "FAV" : nullptr,
+                         g_loopMode == LoopMode::One ? "R1" :
+                         g_loopMode == LoopMode::All ? "RA" : nullptr,
+                         g_shuffleEnabled ? "SF" : nullptr,
+                         player_sink_is_usb_active() ? "USB" : nullptr};
+  int chipsWidth = 0;
+  for (const char *chip : chips) {
+    if (chip)
+      chipsWidth += pm_text_width(PM_TARGET_EINK, chip, PM_STYLE_TINY) + 12;
   }
-  pm_text(PM_TARGET_EINK, kInfoX, playStatusY, playStatus, PM_STYLE_TINY);
-
-  int barY = kArtY + kArtSize + 14;
-  int barW = pm_eink_width() - 16;
-  pm_eink_rect(8, barY, 8 + barW - 1, barY + 7, false, true);
-  if (g_nowProgress > 0.0f && g_nowProgress <= 1.0f) {
-    int filled = (int)((barW - 2) * g_nowProgress);
-    if (filled > 0)
-      pm_eink_rect(9, barY + 1, 9 + filled - 1, barY + 6, true, true);
+  int chipX = volX - 8 - chipsWidth;
+  const char *source = pm_layout_truncate_with_ellipsis(
+      source_label(), chipX - 16, PM_STYLE_SMALL, PM_TARGET_EINK);
+  pm_text(PM_TARGET_EINK, 8, bandY + 6, source, PM_STYLE_SMALL);
+  for (const char *chip : chips) {
+    if (chip)
+      chipX = draw_chip(chipX, bandY - 3, chip);
   }
+  pm_text(PM_TARGET_EINK, volX, bandY + 6, volBuf, PM_STYLE_SMALL);
 
-  char timeBuf[32];
-  char elapsedStr[16];
-  char durationStr[16];
-  uint32_t elapsed = static_cast<uint32_t>(g_nowProgress * g_nowDuration);
-  format_time(elapsedStr, sizeof(elapsedStr), elapsed);
-  format_time(durationStr, sizeof(durationStr), g_nowDuration);
-  snprintf(timeBuf, sizeof(timeBuf), "%s / %s", elapsedStr, durationStr);
-  pm_text(PM_TARGET_EINK, 8, barY + 24, timeBuf, PM_STYLE_TINY);
-
-  draw_footer("SPC:pause < >:skip /\\/:vol B:browser P:plist ?:help");
+  draw_footer("SPC:pause L/R:skip U:output B:browser ?:help");
 
   pm_eink_refresh();
 }
