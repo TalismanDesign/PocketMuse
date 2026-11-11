@@ -1,1 +1,0 @@
-../../PocketMageOS/include/config.h

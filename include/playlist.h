@@ -1,107 +1,91 @@
 #pragma once
-#include <Arduino.h>
-#include <FS.h>
-#include <stdint.h>
-#include <stddef.h>
-#include <vector>
 
-// Plays directory
-static constexpr const char* kMuseDir     = "/music/.muse";
-static constexpr const char* kPlDir       = "/music/.muse/playlists";
-static constexpr const char* kFavFile     = "/music/.muse/favs.txt";
+#include <cstddef>
+#include <cstdint>
 
 enum class PlaySource : uint8_t {
-    Library,
-    Favorites,
-    Playlist,
+  Library,
+  Favorites,
+  Playlist,
 };
 
 struct PlaylistMeta {
-    String filename;   // full path to .m3u file
-    String name;       // display name (filename without .m3u)
-    int    count;      // total entries (-1 if not loaded)
+  char filename[256]; 
+  char name[64];      
+  int count;          
 };
 
-// Lightweight cursor into a playlist for streaming access.
-// Builds a small offset table in RAM (~4 bytes/entry) so paging
-// is a single seek + read per page, not a full re-scan.
 class PlaylistCursor {
 public:
-    PlaylistCursor() : file_size_(0), count_(0), offsets_(nullptr) {}
+  PlaylistCursor();
+  ~PlaylistCursor();
 
-    bool load(const char* m3uPath, bool isFav);
-    void unload();
+  /** Load path offsets, accepting an empty or absent list as empty.
+   * Return false on invalid paths, allocation failure, or nonempty-file read failure.
+   */
+  bool load(const char *path, bool isFav);
+  void unload();
 
-    int  count() const { return count_; }
-    bool valid() const { return offsets_ != nullptr; }
+  int count() const { return count_; }
+  bool valid() const { return path_[0] != '\0'; }
 
-    // Read entry at index into pathBuf. Returns true if found.
-    bool getEntry(int index, char* pathBuf, size_t bufSize);
-
-    // Read a page of counts into the given vector. Clears vec first.
-    bool readPage(int startIndex, int count, std::vector<String>& out);
+  bool getEntry(int index, char *pathBuf, size_t bufSize) const;
 
 private:
-    bool parseM3U_(File& f);
-    bool parseFavs_(File& f);
-    bool readLine_(File& f, char* buf, size_t bufSize);
+  bool parseM3U_(const char *data, size_t size);
+  bool parseFavs_(const char *data, size_t size);
 
-    uint32_t   file_size_;
-    int        count_;
-    char       path_[256];
-    uint32_t*  offsets_; // heap-allocated byte offsets for each entry
-
-    static constexpr int kScanBufSize = 512;
+  uint32_t file_size_;
+  int count_;
+  char path_[256];
+  uint32_t *offsets_; 
 };
 
 class PlaylistManager {
 public:
-    PlaylistManager();
+  PlaylistManager();
+  ~PlaylistManager();
 
-    // Scan the playlists directory. Must be called at least once.
-    bool begin();
+  bool begin();
 
-    // Playlist listing
-    int  playlistCount() const { return (int)playlists_.size(); }
-    const PlaylistMeta& playlistMeta(int idx) const;
-    int  findPlaylist(const char* name) const;
+  int playlistCount() const { return playlist_count_; }
+  const PlaylistMeta &playlistMeta(int idx) const;
+  int findPlaylist(const char *name) const;
 
-    // Playlist CRUD
-    bool createPlaylist(const char* name);
-    bool deletePlaylist(int idx);
+  bool createPlaylist(const char *name);
+  bool deletePlaylist(int idx);
 
-    // Current source
-    PlaySource source() const { return source_; }
-    const PlaylistCursor& cursor() const { return cursor_; }
-    int  playlistIndex() const { return pl_index_; }
+  PlaySource source() const { return source_; }
+  const PlaylistCursor &cursor() const { return cursor_; }
+  int playlistIndex() const { return pl_index_; }
 
-    // Source switching
-    bool playLibrary();           // switch to full library as source
-    bool playFavorites();         // switch to favorites
-    bool playPlaylist(int idx);   // switch to a named playlist
+  bool playLibrary();
+  /** Select Favorites, including an empty list; return false on a read failure. */
+  bool playFavorites();
+  /** Select playlist idx; failed reads preserve metadata for retry and return false. */
+  bool playPlaylist(int idx);
 
-    // Active source helpers
-    int  entryCount() const;
-    bool readPage(int start, int count, std::vector<String>& out);
-    bool getEntry(int index, char* pathBuf, size_t bufSize);
+  int entryCount() const;
+  bool getEntry(int index, char *pathBuf, size_t bufSize);
 
-    // Favorites
-    bool toggleFavorite(const char* path);
-    bool isFavorite(const char* path);
-    int  favoriteCount();
+  bool toggleFavorite(const char *path);
+  bool isFavorite(const char *path);
+  int favoriteCount();
 
-    // Playlist content management
-    bool addToPlaylist(int plIdx, const char* songPath);
-    bool removeFromPlaylist(int plIdx, int entryIndex);
+  bool addToPlaylist(int plIdx, const char *songPath);
+  bool removeFromPlaylist(int plIdx, int entryIndex);
 
 private:
-    void scanPlaylists_();
-    bool removeLine_(const char* filePath, const char* line);
+  void scanPlaylists_();
 
-    PlaySource      source_;
-    PlaylistCursor  cursor_;
-    int             pl_index_;
-    std::vector<PlaylistMeta> playlists_;
+  PlaySource source_;
+  PlaylistCursor cursor_;
+  int pl_index_;
+  PlaylistMeta *playlists_; 
+  int playlists_cap_;
+  int playlist_count_;
 
-    static constexpr int kMaxFavs = 256;
+  static constexpr int kMaxFavs = 256;
 };
+
+PlaylistManager &playlistMgr();
