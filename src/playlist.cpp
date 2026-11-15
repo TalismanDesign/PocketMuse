@@ -3,6 +3,8 @@
 #include "paths.h"
 #include "pm_app_api.h"
 
+#include <algorithm>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -29,8 +31,8 @@ static constexpr size_t kPathCapacity = 256;
 static constexpr char kM3UHeader[] = "#EXTM3U\n";
 
 // Counting, lookup and deletion share the same definition of a visible entry.
-static bool nextEntry(const char *data, size_t size, size_t &pos,
-                      size_t &start, size_t &length) {
+static bool nextEntry(const char *data, size_t size, size_t &pos, size_t &start,
+                      size_t &length) {
   while (pos < size) {
     start = pos;
     while (pos < size && data[pos] != '\n' && data[pos] != '\r')
@@ -62,7 +64,8 @@ static bool rewriteEntries(const char *file, int removeIndex,
   char *data = size ? readTextFile(file, &size) : nullptr;
   if (size && !data)
     return false;
-  size_t extra = (appendPath ? std::strlen(appendPath) : 0) + sizeof(kM3UHeader) + 2;
+  size_t extra =
+      (appendPath ? std::strlen(appendPath) : 0) + sizeof(kM3UHeader) + 2;
   if (size > std::numeric_limits<size_t>::max() - extra) {
     std::free(data);
     return false;
@@ -95,12 +98,12 @@ static bool rewriteEntries(const char *file, int removeIndex,
     used += length;
     result[used++] = '\n';
   }
-  bool ok = pm_sd_write_binary_file(file, reinterpret_cast<const uint8_t *>(result), used);
+  bool ok = pm_sd_write_binary_file(
+      file, reinterpret_cast<const uint8_t *>(result), used);
   std::free(result);
   std::free(data);
   return ok;
 }
-
 
 PlaylistCursor::PlaylistCursor() : file_size_(0), count_(0), offsets_(nullptr) {
   path_[0] = '\0';
@@ -148,29 +151,39 @@ bool PlaylistCursor::getEntry(int index, char *pathBuf, size_t bufSize) const {
   if (!valid() || index < 0 || index >= count_ || !pathBuf || bufSize == 0)
     return false;
 
-  size_t fsize = 0;
-  char *data = readTextFile(path_, &fsize);
-  if (!data)
+  int slot = pm_sd_stream_open_mode(path_, 'r');
+  if (slot < 0)
     return false;
 
   size_t off = offsets_[index];
-  if (off >= fsize || fsize != file_size_) {
-    std::free(data);
-    return false;
+  bool ok = off < file_size_ && off <= LONG_MAX &&
+            pm_sd_stream_size(slot) == file_size_ &&
+            pm_sd_stream_seek_from(slot, static_cast<long>(off), SEEK_SET);
+  size_t length = 0;
+  if (ok) {
+    const size_t remaining = file_size_ - off;
+    const size_t requested = std::min(remaining, bufSize - 1);
+    ok = requested > 0 &&
+         pm_sd_stream_read(slot, pathBuf, requested) == requested;
+    if (ok) {
+      while (length < requested && pathBuf[length] != '\n' &&
+             pathBuf[length] != '\r' && pathBuf[length] != '\0')
+        ++length;
+      if (length < requested) {
+        ok = pathBuf[length] != '\0';
+      } else if (requested < remaining) {
+        // A path that exactly fills the caller's buffer still fits when its
+        // next byte is EOL.
+        char terminator = '\0';
+        ok = pm_sd_stream_read(slot, &terminator, 1) == 1 &&
+             (terminator == '\n' || terminator == '\r');
+      }
+      ok = ok && length > 0;
+    }
   }
-  size_t end = off;
-  while (end < fsize && data[end] != '\n' && data[end] != '\r')
-    end++;
-  size_t copyLen = static_cast<size_t>(end - off);
-  if (copyLen >= bufSize) {
-    std::free(data);
-    return false;
-  }
-  std::memcpy(pathBuf, data + off, copyLen);
-  pathBuf[copyLen] = '\0';
-  std::free(data);
-
-  return pathBuf[0] != '\0';
+  const bool closed = pm_sd_stream_close_checked(slot);
+  pathBuf[ok && closed ? length : 0] = '\0';
+  return ok && closed;
 }
 
 bool PlaylistCursor::parseM3U_(const char *data, size_t size) {
@@ -215,15 +228,13 @@ bool PlaylistCursor::parseFavs_(const char *data, size_t size) {
   return parseM3U_(data, size);
 }
 
-
 PlaylistManager::PlaylistManager()
     : source_(PlaySource::Library), pl_index_(-1), playlists_(nullptr),
-      playlists_cap_(0), playlist_count_(0) {}
+      playlist_count_(0) {}
 
 PlaylistManager::~PlaylistManager() {
   std::free(playlists_);
   playlists_ = nullptr;
-  playlists_cap_ = 0;
   playlist_count_ = 0;
 }
 
@@ -236,8 +247,7 @@ bool PlaylistManager::begin() {
   fflush(stdout);
   if (!musicOk || !stateOk || !plOk)
     return false;
-  scanPlaylists_();
-  return true;
+  return scanPlaylists_();
 }
 
 const PlaylistMeta &PlaylistManager::playlistMeta(int idx) const {
@@ -264,8 +274,7 @@ bool PlaylistManager::createPlaylist(const char *name) {
 
   pm_sd_write_file(fpath, "#EXTM3U\n");
 
-  scanPlaylists_();
-  return true;
+  return scanPlaylists_();
 }
 
 bool PlaylistManager::deletePlaylist(int idx) {
@@ -279,8 +288,7 @@ bool PlaylistManager::deletePlaylist(int idx) {
   }
 
   pm_sd_delete_file(playlists_[idx].filename);
-  scanPlaylists_();
-  return true;
+  return scanPlaylists_();
 }
 
 bool PlaylistManager::playLibrary() {
@@ -397,7 +405,8 @@ bool PlaylistManager::removeFromPlaylist(int plIdx, int entryIndex) {
     return false;
   }
 
-  if (!rewriteEntries(playlists_[plIdx].filename, entryIndex, nullptr, nullptr, true))
+  if (!rewriteEntries(playlists_[plIdx].filename, entryIndex, nullptr, nullptr,
+                      true))
     return false;
 
   tmp.unload();
@@ -411,50 +420,94 @@ bool PlaylistManager::removeFromPlaylist(int plIdx, int entryIndex) {
   return true;
 }
 
-void PlaylistManager::scanPlaylists_() {
-  playlist_count_ = 0;
+static bool isPlaylist(const char *name, bool isDir) {
+  size_t length = std::strlen(name);
+  return !isDir && length >= 4 && std::strcmp(name + length - 4, ".m3u") == 0;
+}
 
+bool PlaylistManager::scanPlaylists_() {
   int count = pm_sd_dir_open(paths::kPlaylistsDir);
   if (count < 0)
-    return;
+    return false;
 
   char name[128];
-  bool is_dir;
+  bool is_dir = false;
+  int matched = 0;
   for (int i = 0; i < count; i++) {
-    if (!pm_sd_dir_entry(i, name, sizeof(name), &is_dir))
+    if (!pm_sd_dir_entry(i, name, sizeof(name), &is_dir)) {
+      pm_sd_dir_close();
+      return false;
+    }
+    if (isPlaylist(name, is_dir))
+      ++matched;
+  }
+  if (static_cast<size_t>(matched) > SIZE_MAX / sizeof(PlaylistMeta)) {
+    pm_sd_dir_close();
+    return false;
+  }
+  PlaylistMeta *replacement =
+      matched ? static_cast<PlaylistMeta *>(std::malloc(
+                    static_cast<size_t>(matched) * sizeof(PlaylistMeta)))
+              : nullptr;
+  if (matched && !replacement) {
+    pm_sd_dir_close();
+    return false;
+  }
+  int written = 0;
+  int activeIndex = -1;
+  const char *activeFile = source_ == PlaySource::Playlist && pl_index_ >= 0 &&
+                                   pl_index_ < playlist_count_
+                               ? playlists_[pl_index_].filename
+                               : nullptr;
+  bool ok = true;
+  for (int i = 0; i < count; i++) {
+    if (!pm_sd_dir_entry(i, name, sizeof(name), &is_dir)) {
+      ok = false;
+      break;
+    }
+    if (!isPlaylist(name, is_dir))
       continue;
-    if (is_dir)
-      continue;
-
-    size_t nlen = std::strlen(name);
-    if (nlen < 4 || std::strcmp(name + nlen - 4, ".m3u") != 0)
-      continue;
-
-    if (playlist_count_ >= playlists_cap_) {
-      int new_cap = playlists_cap_ ? playlists_cap_ * 2 : 16;
-      PlaylistMeta *np = static_cast<PlaylistMeta *>(
-          std::realloc(playlists_, new_cap * sizeof(PlaylistMeta)));
-      if (!np) {
-        pm_sd_dir_close();
-        return;
-      }
-      playlists_ = np;
-      playlists_cap_ = new_cap;
+    if (written >= matched) {
+      ok = false;
+      break;
     }
 
-    PlaylistMeta &meta = playlists_[playlist_count_];
-    snprintf(meta.filename, sizeof(meta.filename), "%s/%s",
-             paths::kPlaylistsDir, name);
+    PlaylistMeta &meta = replacement[written];
+    int length = snprintf(meta.filename, sizeof(meta.filename), "%s/%s",
+                          paths::kPlaylistsDir, name);
+    if (length < 0 || static_cast<size_t>(length) >= sizeof(meta.filename)) {
+      ok = false;
+      break;
+    }
     std::strncpy(meta.name, name, sizeof(meta.name) - 1);
     meta.name[sizeof(meta.name) - 1] = '\0';
     char *dot = std::strrchr(meta.name, '.');
     if (dot)
       *dot = '\0';
     meta.count = -1;
-    playlist_count_++;
+    if (activeFile && std::strcmp(activeFile, meta.filename) == 0) {
+      activeIndex = written;
+      meta.count = cursor_.count();
+    }
+    ++written;
   }
 
   pm_sd_dir_close();
+  if (!ok || written != matched) {
+    std::free(replacement);
+    return false;
+  }
+  std::free(playlists_);
+  playlists_ = replacement;
+  playlist_count_ = matched;
+  if (source_ == PlaySource::Playlist) {
+    pl_index_ = activeIndex;
+    if (activeIndex < 0) {
+      cursor_.unload();
+      source_ = PlaySource::Library;
+    }
+  }
+  return true;
 }
 
 PlaylistManager &playlistMgr() {

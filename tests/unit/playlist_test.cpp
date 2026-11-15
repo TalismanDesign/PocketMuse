@@ -1,7 +1,7 @@
+#include "fake_sd.h"
 #include "paths.h"
 #include "playlist.h"
 #include "pm_app_api.h"
-#include "fake_sd.h"
 
 #include <cassert>
 #include <cstdio>
@@ -12,18 +12,20 @@
 namespace {
 constexpr const char *kPlaylist = "/music/.muse/playlists/Road.m3u";
 
-void expectEntry(const PlaylistCursor &cursor, int index, const char *expected) {
+void expectEntry(const PlaylistCursor &cursor, int index,
+                 const char *expected) {
   char path[256];
   assert(cursor.getEntry(index, path, sizeof(path)));
   assert(std::strcmp(path, expected) == 0);
 }
-}
+} // namespace
 
 int main() {
   PlaylistManager manager;
   assert(manager.begin());
 
-  files[paths::kFavorites] = "\r\n \t\n# favorites\r\n/music/One.mp3\r\n/music/Two.mp3";
+  files[paths::kFavorites] =
+      "\r\n \t\n# favorites\r\n/music/One.mp3\r\n/music/Two.mp3";
   assert(manager.favoriteCount() == 2);
   assert(manager.playFavorites());
   expectEntry(manager.cursor(), 0, "/music/One.mp3");
@@ -34,7 +36,8 @@ int main() {
   expectEntry(manager.cursor(), 0, "/music/Two.mp3");
 
   // Removing by visible index must not count the M3U header or blank lines.
-  files[kPlaylist] = "#EXTM3U\n\n/music/One.mp3\r\n#EXTINF:2,Two\n/music/Two.mp3";
+  files[kPlaylist] =
+      "#EXTM3U\n\n/music/One.mp3\r\n#EXTINF:2,Two\n/music/Two.mp3";
   assert(manager.playPlaylist(0));
   assert(manager.removeFromPlaylist(0, 0));
   assert(manager.entryCount() == 1);

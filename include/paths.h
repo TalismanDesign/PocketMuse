@@ -8,5 +8,6 @@ constexpr const char *kPlaylistsDir = "/music/.muse/playlists";
 constexpr const char *kFavorites = "/music/.muse/favs.txt";
 constexpr const char *kMetadata = "/music/.muse/metadata.bin";
 constexpr const char *kAlbumArt = "/music/.muse/cache_art.jpg";
+constexpr const char *kLibraryIndex = "/music/.muse/library.idx";
 
 } // namespace paths

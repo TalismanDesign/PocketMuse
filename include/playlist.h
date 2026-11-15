@@ -10,9 +10,9 @@ enum class PlaySource : uint8_t {
 };
 
 struct PlaylistMeta {
-  char filename[256]; 
-  char name[64];      
-  int count;          
+  char filename[256];
+  char name[64];
+  int count;
 };
 
 class PlaylistCursor {
@@ -21,7 +21,8 @@ public:
   ~PlaylistCursor();
 
   /** Load path offsets, accepting an empty or absent list as empty.
-   * Return false on invalid paths, allocation failure, or nonempty-file read failure.
+   * Return false on invalid paths, allocation failure, or nonempty-file read
+   * failure.
    */
   bool load(const char *path, bool isFav);
   void unload();
@@ -38,7 +39,7 @@ private:
   uint32_t file_size_;
   int count_;
   char path_[256];
-  uint32_t *offsets_; 
+  uint32_t *offsets_;
 };
 
 class PlaylistManager {
@@ -60,9 +61,11 @@ public:
   int playlistIndex() const { return pl_index_; }
 
   bool playLibrary();
-  /** Select Favorites, including an empty list; return false on a read failure. */
+  /** Select Favorites, including an empty list; return false on a read failure.
+   */
   bool playFavorites();
-  /** Select playlist idx; failed reads preserve metadata for retry and return false. */
+  /** Select playlist idx; failed reads preserve metadata for retry and return
+   * false. */
   bool playPlaylist(int idx);
 
   int entryCount() const;
@@ -76,13 +79,12 @@ public:
   bool removeFromPlaylist(int plIdx, int entryIndex);
 
 private:
-  void scanPlaylists_();
+  bool scanPlaylists_();
 
   PlaySource source_;
   PlaylistCursor cursor_;
   int pl_index_;
-  PlaylistMeta *playlists_; 
-  int playlists_cap_;
+  PlaylistMeta *playlists_;
   int playlist_count_;
 
   static constexpr int kMaxFavs = 256;

@@ -1,8 +1,8 @@
 #include "ui_helpers.h"
 
 #include "muse.h"
-#include "playlist.h"
 #include "paths.h"
+#include "playlist.h"
 #include "ui_player.h"
 
 #include "pm_app_api.h"
@@ -121,8 +121,8 @@ void ui_update_oled() {
 
   // A font glyph for play/pause falls back to a tofu box in these u8g2 fonts,
   // so the transport marker is drawn, not typed. Reserve a small column for it.
-  const int kIconBox = 7;    // glyph fits in a 7px box
-  const int kIconTop = 2;    // top of the glyph on line 1
+  const int kIconBox = 7; // glyph fits in a 7px box
+  const int kIconTop = 2; // top of the glyph on line 1
   const int kTitleX = kIconBox + 4;
   const int kTextOffsetY = 3;
   const int kTitleBaseline = 11 + kTextOffsetY;
@@ -145,9 +145,8 @@ void ui_update_oled() {
   int titleMaxW = w - kTitleX - timeW - 6;
   if (titleMaxW < 16)
     titleMaxW = 16;
-  const char *title = pm_layout_truncate_with_ellipsis(rawTitle, titleMaxW,
-                                                        PM_STYLE_MEDIUM,
-                                                        PM_TARGET_OLED);
+  const char *title = pm_layout_truncate_with_ellipsis(
+      rawTitle, titleMaxW, PM_STYLE_MEDIUM, PM_TARGET_OLED);
   pm_text(PM_TARGET_OLED, kTitleX, kTitleBaseline, title, PM_STYLE_MEDIUM);
   pm_text(PM_TARGET_OLED, w - timeW, kTitleBaseline, timeBuf, PM_STYLE_TINY);
 

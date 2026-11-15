@@ -11,7 +11,7 @@
 static constexpr int kItemH = 10;
 static constexpr int kListTop = 32;
 static constexpr int kListBot = 214;
-static constexpr int kMaxVis = (kListBot - kListTop) / kItemH; 
+static constexpr int kMaxVis = (kListBot - kListTop) / kItemH;
 
 static int g_plScroll = 0;
 
@@ -115,7 +115,8 @@ void playlist_render() {
     }
     pm_text(PM_TARGET_EINK, 8, y, row, PM_STYLE_TINY);
 
-    if (std::strcmp(path, g_nowPath) == 0 && g_playState != PlayerState::Stopped) {
+    if (std::strcmp(path, g_nowPath) == 0 &&
+        g_playState != PlayerState::Stopped) {
       draw_transport_icon_eink(w - 22, y - 7, 7, g_playState);
     }
 

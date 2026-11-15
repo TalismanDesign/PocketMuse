@@ -101,8 +101,9 @@ void nowplaying_cache_art(const char *path, const pm_media_info &info) {
 
   std::memset(s_artCache, 0, sizeof(s_artCache));
 
-  if (pm_image_decode_region_to_1bit(path, info.coverOffset, info.coverLength, s_artCache,
-                                     kArtSize, kArtSize, 0, 0, kArtSize, true)) {
+  if (pm_image_decode_region_to_1bit(path, info.coverOffset, info.coverLength,
+                                     s_artCache, kArtSize, kArtSize, 0, 0,
+                                     kArtSize, true)) {
     s_cachedW = kArtSize;
     s_cachedH = kArtSize;
     std::strncpy(s_artCachePath, path, sizeof(s_artCachePath) - 1);
@@ -219,12 +220,14 @@ void nowplaying_render() {
   pm_eink_rect(0, bandY - 6, pm_eink_width() - 1, bandY - 6, false, true);
 
   char volBuf[16];
-  snprintf(volBuf, sizeof(volBuf), "Vol %d%%", (pm_audio_get_volume_level() * 100 + 127) / 255);
+  snprintf(volBuf, sizeof(volBuf), "Vol %d%%",
+           (pm_audio_get_volume_level() * 100 + 127) / 255);
   int volW = pm_text_width(PM_TARGET_EINK, volBuf, PM_STYLE_SMALL);
   int volX = pm_eink_width() - 8 - volW;
   const char *chips[] = {g_isFavorite ? "FAV" : nullptr,
-                         g_loopMode == LoopMode::One ? "R1" :
-                         g_loopMode == LoopMode::All ? "RA" : nullptr,
+                         g_loopMode == LoopMode::One   ? "R1"
+                         : g_loopMode == LoopMode::All ? "RA"
+                                                       : nullptr,
                          g_shuffleEnabled ? "SF" : nullptr,
                          player_sink_is_usb_active() ? "USB" : nullptr};
   int chipsWidth = 0;

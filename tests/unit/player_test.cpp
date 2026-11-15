@@ -22,21 +22,35 @@ uint64_t positionMs = 0;
 bool savedSettings = false;
 bool metadataAvailable = true;
 uint32_t cachedCoverOffset = 0;
-}
+bool decoderActive = false;
+bool stopCompletes = true;
+int metadataCalls = 0;
+} // namespace
 
 extern "C" {
 void pm_audio_play(const char *) {
   ++request;
   ++playCalls;
   result = PM_AUDIO_RESULT_PENDING;
+  decoderActive = true;
 }
-void pm_audio_stop_playback() { state = PM_AUDIO_STATE_IDLE; }
+void pm_audio_stop_playback() {}
+bool pm_audio_stop_playback_checked(uint32_t) {
+  if (!stopCompletes)
+    return false;
+  decoderActive = false;
+  state = PM_AUDIO_STATE_IDLE;
+  return true;
+}
 void pm_audio_pause() { state = PM_AUDIO_STATE_PAUSED; }
 void pm_audio_resume() { state = PM_AUDIO_STATE_PLAYING; }
 void pm_audio_set_volume(int8_t) {}
 void pm_audio_set_volume_level(uint8_t value) { volume = value; }
 uint8_t pm_audio_get_volume_level() { return volume; }
-bool pm_audio_save_settings() { savedSettings = true; return true; }
+bool pm_audio_save_settings() {
+  savedSettings = true;
+  return true;
+}
 int pm_audio_get_output() { return output; }
 uint64_t pm_audio_get_position_ms() { return positionMs; }
 uint32_t pm_audio_get_playback_id() { return request; }
@@ -52,7 +66,10 @@ bool pm_audio_usb_connected() { return connected; }
 int pm_audio_get_active_output() { return output; }
 void pm_audio_set_output(int value) { output = value; }
 bool pm_media_probe(const char *, pm_media_info *out) {
-  if (!metadataAvailable) return false;
+  assert(!decoderActive);
+  ++metadataCalls;
+  if (!metadataAvailable)
+    return false;
   *out = {};
   std::strcpy(out->title, "Shared title");
   std::strcpy(out->artist, "Shared artist");
@@ -65,8 +82,10 @@ bool pm_media_probe(const char *, pm_media_info *out) {
 }
 }
 
-// Rendering is outside playback control; keep the shared metadata handoff observable.
+// Rendering is outside playback control; keep the shared metadata handoff
+// observable.
 void nowplaying_cache_art(const char *, const pm_media_info &info) {
+  assert(!decoderActive);
   cachedCoverOffset = info.coverOffset;
 }
 void get_display_name(const char *path, char *out, size_t size) {
@@ -91,7 +110,8 @@ static void favorite_edit_preserves_shuffle_cycle() {
     const int position = g_shufflePos;
     player_toggle_favorite();
     assert(g_shufflePos == position);
-    assert(std::vector<int>(g_shuffleIdx, g_shuffleIdx + g_shuffleIdxCount) == order);
+    assert(std::vector<int>(g_shuffleIdx, g_shuffleIdx + g_shuffleIdxCount) ==
+           order);
   }
   result = PM_AUDIO_RESULT_ENDED;
   player_poll();
@@ -119,7 +139,8 @@ static void edits_keep_absent_playing_track_at_not_found() {
 }
 
 int main() {
-  files[paths::kFavorites] = "/music/One.mp3\n/music/Two.mp3\n/music/Three.mp3\n";
+  files[paths::kFavorites] =
+      "/music/One.mp3\n/music/Two.mp3\n/music/Three.mp3\n";
   assert(playlistMgr().playFavorites());
   g_trackCount = 3;
   player_play_index(0);
@@ -127,10 +148,17 @@ int main() {
   assert(std::strcmp(g_nowArtist, "Shared artist") == 0);
   assert(std::strcmp(g_nowAlbum, "Shared album") == 0);
   assert(g_nowDuration == 123 && cachedCoverOffset == 34);
+  stopCompletes = false;
+  const int previousPlays = playCalls, previousProbes = metadataCalls;
+  player_play_index(1);
+  assert(playCalls == previousPlays && metadataCalls == previousProbes);
+  assert(g_nowTrackIndex == 0);
+  stopCompletes = true;
   metadataAvailable = false;
   player_play_index(0);
   assert(std::strcmp(g_nowTitle, "/music/One.mp3") == 0);
-  assert(!g_nowArtist[0] && !g_nowAlbum[0] && g_nowDuration == 0 && cachedCoverOffset == 0);
+  assert(!g_nowArtist[0] && !g_nowAlbum[0] && g_nowDuration == 0 &&
+         cachedCoverOffset == 0);
   playCalls = 1;
   metadataAvailable = true;
   assert(g_nowTrackIndex == 0);
@@ -210,7 +238,8 @@ int main() {
   player_poll();
   assert(std::strcmp(g_nowPath, "/music/Three.mp3") == 0);
 
-  // Source cycling visits empty Favorites and playlists without stale selections.
+  // Source cycling visits empty Favorites and playlists without stale
+  // selections.
   assert(playlistMgr().begin());
   assert(playlistMgr().playLibrary());
   files[paths::kFavorites].clear();

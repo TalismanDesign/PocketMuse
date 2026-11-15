@@ -13,7 +13,7 @@
 static constexpr int kItemH = 16;
 static constexpr int kListTop = 36;
 static constexpr int kListBot = 216;
-static constexpr int kMaxVis = (kListBot - kListTop) / kItemH; 
+static constexpr int kMaxVis = (kListBot - kListTop) / kItemH;
 
 static int g_scrollOffset = 0;
 
@@ -150,8 +150,8 @@ void browser_render() {
     int baseline = y + 10;
     int titleMaxW = w - kTitleX - kMarkerW - 6;
     int style = i == g_selIndex ? PM_STYLE_SANS_BOLD : PM_STYLE_SMALL;
-    const char *title = pm_layout_truncate_with_ellipsis(
-        label, titleMaxW, style, PM_TARGET_EINK);
+    const char *title = pm_layout_truncate_with_ellipsis(label, titleMaxW,
+                                                         style, PM_TARGET_EINK);
 
     char numBuf[16];
     snprintf(numBuf, sizeof(numBuf), "%2d.", i + 1);
@@ -167,7 +167,8 @@ void browser_render() {
 
     // Now-playing marker: a small drawn play triangle rather than a font
     // glyph (the serif fonts render such glyphs as tofu).
-    if (std::strcmp(path, g_nowPath) == 0 && g_playState != PlayerState::Stopped) {
+    if (std::strcmp(path, g_nowPath) == 0 &&
+        g_playState != PlayerState::Stopped) {
       int triX = w - kMarkerW;
       int triTop = y + 2;
       int triH = 9;

@@ -18,7 +18,7 @@ static void process_key(char ch) {
   if (exit_key(ch)) {
     music_stop();
     g_appMode = MODE_BROWSER;
-    return; 
+    return;
   }
 
   if (g_appMode != MODE_HELP && (ch == 'u' || ch == 'U')) {

@@ -41,7 +41,8 @@ void build_shuffle() {
     g_shuffleIdx[i] = i;
   for (int i = n - 1; i > 0; --i) {
     int j = static_cast<int>((static_cast<double>(std::rand()) /
-                              (static_cast<double>(RAND_MAX) + 1.0)) * (i + 1));
+                              (static_cast<double>(RAND_MAX) + 1.0)) *
+                             (i + 1));
     int value = g_shuffleIdx[i];
     g_shuffleIdx[i] = g_shuffleIdx[j];
     g_shuffleIdx[j] = value;
@@ -67,12 +68,7 @@ bool get_track_path(int index, char *buf, size_t bufSize) {
   PlaySource src = playlistMgr().source();
   switch (src) {
   case PlaySource::Library:
-    if (index >= 0 && index < library().count()) {
-      const char *p = library().path(index);
-      std::strncpy(buf, p, bufSize - 1);
-      buf[bufSize - 1] = '\0';
-    }
-    break;
+    return library().path(index, buf, bufSize);
   case PlaySource::Favorites:
   case PlaySource::Playlist:
     playlistMgr().getEntry(index, buf, bufSize);
@@ -87,6 +83,12 @@ void player_play_index(int index) {
     return;
 
   music_stop();
+
+  constexpr uint32_t kTrackStopTimeoutMs = 5000;
+  if (!pm_audio_stop_playback_checked(kTrackStopTimeoutMs)) {
+    pm_oled_sysmsg(pm_audio_get_last_error(), 1200);
+    return;
+  }
 
   g_nowTitle[0] = '\0';
   g_nowArtist[0] = '\0';
@@ -122,7 +124,8 @@ void player_play_index(int index) {
     g_nowArtist[sizeof(g_nowArtist) - 1] = '\0';
     g_nowAlbum[sizeof(g_nowAlbum) - 1] = '\0';
     const uint64_t seconds = info.durationMs / 1000;
-    g_nowDuration = static_cast<uint32_t>(seconds > UINT32_MAX ? UINT32_MAX : seconds);
+    g_nowDuration =
+        static_cast<uint32_t>(seconds > UINT32_MAX ? UINT32_MAX : seconds);
   }
 
   nowplaying_cache_art(path, info);
@@ -252,7 +255,8 @@ void player_cycle_source() {
   g_nowTrackIndex = -1;
   for (int i = 0; i < g_trackCount; ++i) {
     char path[256];
-    if (get_track_path(i, path, sizeof(path)) && std::strcmp(path, g_nowPath) == 0) {
+    if (get_track_path(i, path, sizeof(path)) &&
+        std::strcmp(path, g_nowPath) == 0) {
       g_nowTrackIndex = i;
       break;
     }
@@ -263,22 +267,22 @@ void player_cycle_source() {
   g_needsRedraw = true;
 }
 
-void player_toggle_favorite() {
-  player_toggle_favorite_path(g_nowPath);
-}
+void player_toggle_favorite() { player_toggle_favorite_path(g_nowPath); }
 
 static void refresh_source_after_edit(int previousIndex) {
   const int previousCount = g_trackCount;
   g_trackCount = playlistMgr().source() == PlaySource::Library
-                     ? library().count() : playlistMgr().entryCount();
-  g_selIndex = g_trackCount > 0 && g_selIndex >= g_trackCount
-                   ? g_trackCount - 1 : g_selIndex;
+                     ? library().count()
+                     : playlistMgr().entryCount();
+  g_selIndex = g_trackCount > 0 && g_selIndex >= g_trackCount ? g_trackCount - 1
+                                                              : g_selIndex;
   if (g_trackCount == 0)
     g_selIndex = 0;
   g_nowTrackIndex = previousIndex > 0 ? previousIndex - 1 : -1;
   for (int i = 0; i < g_trackCount; ++i) {
     char path[256];
-    if (get_track_path(i, path, sizeof(path)) && std::strcmp(path, g_nowPath) == 0) {
+    if (get_track_path(i, path, sizeof(path)) &&
+        std::strcmp(path, g_nowPath) == 0) {
       g_nowTrackIndex = i;
       break;
     }
@@ -308,10 +312,12 @@ void player_remove_selected() {
   int previousIndex = g_nowTrackIndex;
   bool removed = false;
   if (source == PlaySource::Playlist) {
-    removed = playlistMgr().removeFromPlaylist(playlistMgr().playlistIndex(), g_selIndex);
+    removed = playlistMgr().removeFromPlaylist(playlistMgr().playlistIndex(),
+                                               g_selIndex);
   } else {
     char path[256];
-    if (get_track_path(g_selIndex, path, sizeof(path)) && playlistMgr().isFavorite(path))
+    if (get_track_path(g_selIndex, path, sizeof(path)) &&
+        playlistMgr().isFavorite(path))
       removed = !playlistMgr().toggleFavorite(path);
   }
   if (!removed)
@@ -379,15 +385,15 @@ void player_poll() {
 
   int state = pm_audio_get_state();
   PlayerState next = state == PM_AUDIO_STATE_PAUSED ? PlayerState::Paused
-                                                   : PlayerState::Playing;
+                                                    : PlayerState::Playing;
   if (next != g_playState) {
     g_playState = next;
     g_needsRedraw = true;
   }
   if (state == PM_AUDIO_STATE_PLAYING) {
     const uint64_t milliseconds = pm_audio_get_position_ms();
-    g_nowElapsed = static_cast<uint32_t>(milliseconds / 1000 > UINT32_MAX
-                                            ? UINT32_MAX : milliseconds / 1000);
+    g_nowElapsed = static_cast<uint32_t>(
+        milliseconds / 1000 > UINT32_MAX ? UINT32_MAX : milliseconds / 1000);
     g_nowProgress = g_nowDuration > 0
                         ? static_cast<float>(milliseconds) /
                               (static_cast<float>(g_nowDuration) * 1000.0f)
@@ -410,20 +416,21 @@ void music_resume() {
 namespace {
 
 // Volume keys and the scroll gesture both step by this amount.
-constexpr uint8_t kVolumeStep = 10;
+constexpr uint8_t kVolumeStep = 16;
 
 void save_audio_settings() {
   if (!pm_audio_save_settings())
     pm_oled_sysmsg(pm_audio_get_last_error(), 1000);
 }
 
-}  // namespace
+} // namespace
 
 bool player_volume_up() {
   const uint8_t volume = pm_audio_get_volume_level();
   if (volume == 255)
     return false;
-  pm_audio_set_volume_level(volume > 255 - kVolumeStep ? 255 : volume + kVolumeStep);
+  pm_audio_set_volume_level(volume > 255 - kVolumeStep ? 255
+                                                       : volume + kVolumeStep);
   save_audio_settings();
   return true;
 }
