@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 
+static constexpr const char* kLogTag = "MUSE-LIB";
+
 namespace {
 
 bool readExact(int stream, void *buffer, size_t size) {
@@ -39,7 +41,7 @@ bool Library::close_() {
 
 void Library::clear() {
   if (!close_())
-    printf("[muse] library index close failed\n");
+    PM_LOGW(kLogTag, "Library index close failed");
   std::free(tracks_);
   tracks_ = nullptr;
   tracks_cap_ = 0;
@@ -135,13 +137,12 @@ int Library::scan() {
   }
   if (!ok) {
     clear();
-    printf("[muse] library scan failed\n");
+    PM_LOGW(kLogTag, "Library scan failed");
     return -1;
   }
   if (count_ == 0)
     clear();
-  printf("[muse] scan -> %d tracks\n", count_);
-  fflush(stdout);
+  PM_LOGI(kLogTag, "Scan found %d tracks", count_);
   return count_;
 }
 

@@ -36,10 +36,12 @@ def main():
             instrumented[source] = str(target)
         for name, sources in tests.items():
             binary = str(Path(build) / name)
+            all_sources = [*(instrumented.get(source, source) for source in sources),
+                           "tests/support/log_stub.cpp"]
             subprocess.run([
                 os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror",
                 "-fsanitize=address,undefined", "-Iinclude", "-Itests/support",
-                 "-idirafter", str(sdk), *(instrumented.get(source, source) for source in sources),
+                 "-idirafter", str(sdk), *all_sources,
                  "-o", binary,
             ], cwd=root, check=True)
             subprocess.run([binary], check=True)

@@ -10,6 +10,8 @@
 #include <cstdlib>
 #include <cstring>
 
+static constexpr const char* kLogTag = "MUSE";
+
 static bool exit_key(char ch) {
   return ch == PM_KEY_ESCAPE || ch == PM_KEY_ASCII_ESCAPE || ch == 'A';
 }
@@ -47,13 +49,13 @@ extern "C" int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
   if (pm_app_abi() != PM_APP_API_ABI) {
-    printf("PocketMuse: host ABI mismatch: app %u, host %u\n", PM_APP_API_ABI,
-           static_cast<unsigned>(pm_app_abi()));
+    PM_LOGE(kLogTag, "Host ABI mismatch: app %u, host %u", PM_APP_API_ABI,
+            static_cast<unsigned>(pm_app_abi()));
     pm_oled_sysmsg("SDK ABI mismatch", 2000);
     return 1;
   }
 
-  printf("PocketMuse starting (SDK %s)\n", PM_SDK_VERSION);
+  PM_LOGI(kLogTag, "Starting (SDK %s)", PM_SDK_VERSION);
 
   pm_audio_begin();
 

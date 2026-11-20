@@ -10,6 +10,8 @@
 #include <cstring>
 #include <limits>
 
+static constexpr const char* kLogTag = "MUSE-PL";
+
 static char *readTextFile(const char *path, size_t *outSize) {
   size_t fsize = pm_sd_get_file_size(path);
   if (fsize == 0 || fsize >= UINT32_MAX)
@@ -242,9 +244,7 @@ bool PlaylistManager::begin() {
   const bool musicOk = pm_sd_mkdir(paths::kMusicDir);
   const bool stateOk = pm_sd_mkdir(paths::kStateDir);
   const bool plOk = pm_sd_mkdir(paths::kPlaylistsDir);
-  printf("[muse] dirs music=%d state=%d playlists=%d\n", musicOk, stateOk,
-         plOk);
-  fflush(stdout);
+  PM_LOGI(kLogTag, "Dirs music=%d state=%d playlists=%d", musicOk, stateOk, plOk);
   if (!musicOk || !stateOk || !plOk)
     return false;
   return scanPlaylists_();
