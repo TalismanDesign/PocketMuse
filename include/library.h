@@ -19,7 +19,7 @@ public:
 private:
   static constexpr int kMaxDepth = 3;
   static constexpr int kFallbackDepth = 1;
-  static constexpr int kMaxTracks = 400;
+  static constexpr int kMaxTracks = 600;
   static constexpr int kInitialTrackCapacity = 32;
   static constexpr size_t kMaxPath = 256;
 
