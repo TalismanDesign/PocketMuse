@@ -1,86 +1,66 @@
 # PocketMuse
 
-Music player app for the PocketMage PDA. Streams MP3, (AAC and WAV soon)
-from SD card over I2S single-pin PDM output through the piezo buzzer GPIO.
-Supports library browsing, now-playing with album art, playlist management,
-shuffle, and loop modes. Runs as an OTA application slot on the PocketMage OS.
+Music player app for the PocketMage PDA. Streams MP3, WAV, Ogg, and Opus files from SD through the OS audio SDK library, using the built-in PWM piezo or a USB Audio Class speaker/headphones.
+Supports library browsing, now-playing with album art, playlist management, shuffle, and loop modes.
+Runs as a dynamically loaded ELF app on PocketMage OS!
 
 ## Build
 
-Requires PlatformIO, `just`, and the standard ESP32-S3 toolchain.
+PocketMuse is an ELF app built against the PocketMage SDK.
+Build it with the `pm` CLI from the SDK:
 
 ```sh
-just build
+pm build --pack
 ```
 
-This runs two scripts in sequence:
+That compiles `src/`, links `build/PocketMuse.app.elf` plus the `build/PocketMuse.elfo` overlay, and packs them into `build/PocketMuse.tar` for installation through the OS app manager. Packaging requires the SDK's `elf_overlay_relink` and `elf_overlay_emit` tools on `PATH`.
 
-1. `scripts/build_firmware.py` - run `pio run -e OTA_APP`.
-2. `scripts/package_ota.py` - wrap `firmware.bin` into `PocketMuse.tar` for
-   OTA distribution.
-
-The default environment is `OTA_APP`. Set `env` in the `Justfile` or pass
-`ENV=<name>` to build a different PlatformIO environment.
+For an ELF-only clean build:
 
 ```sh
-just upload      # build + upload via USB
-just monitor     # build + upload + serial monitor
+export SDK_ROOT="$(cd [**wherever sdk is**] && pwd)"
+make SDK_ROOT="$SDK_ROOT" clean
+make SDK_ROOT="$SDK_ROOT" elf
 ```
+
+The SDK build recipe locates the installed Espressif Xtensa C++ toolchain, if installed.
+
+`.mp3`, `.wav`, `.ogg`, and `.opus` files live in `/music/` at the root of the SD card; the app creates that directory along with `/music/.muse/` on first launch.
 
 ## Key bindings
 
-| Input        | Action                     |
-|--------------|----------------------------|
-| LEFT / RIGHT | Navigate list / skip track |
-| UP / DOWN    | Volume (Now Playing)       |
-| SPACE        | Play / pause               |
-| ENTER        | Select / play              |
-| P            | Cycle source (Lib/Fav/Pl)  |
-| F            | Toggle favorite            |
-| S            | Toggle shuffle             |
-| L            | Cycle loop (None/One/All)  |
-| D            | Delete from playlist       |
-| B            | Back to browser            |
-| ?            | Help overlay               |
-| ESC / A      | Exit to PocketMage OS      |
+| Input          | Action                                                         |
+| -------------- | -------------------------------------------------------------- |
+| LEFT / RIGHT   | Navigate list / skip track                                     |
+| UP / DOWN      | Volume (Now Playing)                                           |
+| SPACE          | Play / pause                                                   |
+| ENTER          | Select / play                                                  |
+| P              | Cycle source in browser; show queue from Now Playing           |
+| F              | Toggle favorite                                                |
+| S              | Toggle shuffle                                                 |
+| L              | Cycle loop (None/One/All)                                      |
+| D              | Remove selected favorite / playlist entry; keep the music file |
+| U              | Output: Auto / Piezo / USB                                     |
+| B              | Switch browser / Now Playing; return from queue                |
+| ?              | Help overlay                                                   |
+| ESC / A        | Exit to PocketMage OS                                          |
 
 Touch scroll on the slider controls volume in all modes.
 
-## Dependencies
+## Playback and storage
 
-- **PlatformIO** (`espressif32` platform, Arduino framework)
-- **arduino-audio-tools** - audio pipeline (I2S, source callbacks, fading)
-- **arduino-libhelix** - MP3/AAC decode
-- **GxEPD2** (fork:
-  [`ashtf8/GxEPD2_Editable_useFastFullUpdate`](https://github.com/ashtf8/GxEPD2_Editable_useFastFullUpdate))
-- **JPEGDEC** - album art decode
-- **PNGdec** - album art decode
-- **U8g2** - OLED display
+PocketMuse uses a USB speaker if one is connected, otherwise the piezo. Press `U` if you want to choose yourself. Forcing USB without a compatible speaker doesn't leave you with silence. It just plays through the piezo, and the USB chip in the status bar only shows up when USB is really doing the playing.
 
-## Project layout
+Volume and your output choice are saved as SDK settings in NVS under `PMAudio`, so they're still there next time. Favorites are a plain list of full paths. Playlists are `.m3u` files in `/music/.muse/playlists/`, one full path per line. Blank lines and `#` comments are ignored, and LF or CRLF both work. Even an empty source opens without complaining.
 
-```text
-src/
-   main.cpp             audio pipeline, app entry, setup/loop
-   muse.cpp             app-wide globals
-   library.cpp          SD card track scanner (/music/)
-   playlist.cpp         playlist manager (favorites, .m3u)
-   metacache.cpp        ID3 metadata cache on SD
-   albumart.cpp         ID3v2 APIC extraction, JPEG/PNG decode, 1-bit render
-   ui_player.cpp        playback control, shuffle, duration compute
-   ui/
-      ui_browser.cpp    library/favorites/playlist browser
-      ui_nowplaying.cpp now-playing screen with album art
-      ui_playlist.cpp   playlist queue view
-      ui_helpers.cpp    header/footer/scrollbar/OLED/time formatting
-include/                public headers
-lib/
-   PocketMage/          shared PocketMage PDA framework (submodule)
-scripts/
-   build_firmware.py     PlatformIO build helper
-   package_ota.py       firmware -> tar for OTA
-```
+A track that ends on its own advances once. Loop-one only changes that automatic advance: pressing next still skips. Shuffle goes through its cycle and stops, unless loop-all is on. Editing favorites somewhere else doesn't disturb the shuffle cycle you're currently in, and if the playing file has gone missing, its entry stays at `-1`.
+
+The SDK reads tags as the file streams past, so nothing is loaded into memory ahead of time. That covers ID3v2.3/v2.4 in MP3s, LIST/INFO in WAVs, and Vorbis comments in Ogg and Opus. Cover art is handled the same way. Embedded JPEG or PNG, including the base64 picture blocks used by Ogg, goes straight from the file into the OS 1-bit image decoder. There's no artwork cache to maintain, and files without a usable cover get the fallback image.
+
+On the OLED, the progress bar counts decoded audio frames, which keeps it lined up with what you hear. Total time comes from the file wherever it's available: MPEG headers with Xing or VBRI, WAV data chunks, or the last granule of an Ogg page. For MP3s without an exact length, the player estimates from the bitrate.
+
+Sleep is the OS's job, driven by its `TIMEOUT` setting, and any input resets the timer whether it came from the device or an ELF app. Playback, open SD streams, a connected USB audio device, USB mode, and the OS's keep-awake flags all hold the device awake.
 
 ## License
 
-Apache-2.0. Same as the PocketMage project.
+Apache-2.0
