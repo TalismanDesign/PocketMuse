@@ -8,42 +8,89 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
-      - name: Python
-        uses: actions/setup-python@v5
+      - name: Checkout the SDK
+        uses: actions/checkout@v4
         with:
-          python-version: "3.11"
+          repository: TalismanDesign/PocketMage_SDK
+          path: sdk
 
-      - name: PlatformIO
+      - name: Checkout the elf_overlay host tools
+        uses: actions/checkout@v4
+        with:
+          repository: TalismanDesign/elf_overlay
+          path: elf_overlay
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install icon tool deps
+        run: python3 -m pip install pillow
+
+      - name: Install Little-Endian Xtensa Toolchain
         run: |
-          pip install -U platformio
+          set -euo pipefail
+          VER=esp-15.2.0_20251204
+          SHA=3d50f5cd5f173acfd524e07c1cd69bc99585731a415ca2e5bce879997fe602b8
+          TGT="$HOME/.espressif/tools/xtensa-esp-elf/$VER"
+          URL="https://github.com/espressif/crosstool-NG/releases/download/$VER/xtensa-esp-elf-15.2.0_20251204-x86_64-linux-gnu.tar.xz"
+          mkdir -p "$TGT"
+          curl -fsSL -o /tmp/xtensa-esp-elf.tar.xz "$URL"
+          echo "$SHA  /tmp/xtensa-esp-elf.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/xtensa-esp-elf.tar.xz -C "$TGT"
+          echo "$TGT/xtensa-esp-elf/bin" >> "$GITHUB_PATH"
 
-      - name: Install just
-        uses: taiki-e/install-action@v2
-        with:
-          tool: just
-
-      - name: Build
-        shell: bash
+      - name: Build the elf_overlay host tools
+        working-directory: elf_overlay
         run: |
-          just build
+          set -euo pipefail
+          cmake -S . -B build
+          cmake --build build --target elf_overlay_relink elf_overlay_emit
+          echo "$PWD/build" >> "$GITHUB_PATH"
 
-      - name: Commit PocketMuse.tar if changed
-        uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Build the app ELF
+        run: make
+        env:
+          PM_SDK_ROOT: ${{ github.workspace }}/sdk
+
+      - name: Build the delivery tar
+        run: make pack
+        env:
+          PM_SDK_ROOT: ${{ github.workspace }}/sdk
+
+      - name: Inspect the artifact
+        run: |
+          set -euo pipefail
+          xtensa-esp32s3-elf-readelf -h build/PocketMuse.app.elf | grep -E 'Class|Data|Entry point'
+          tar -tf build/PocketMuse.tar | grep -q -- 'PocketMuse.app.elf'
+          tar -tf build/PocketMuse.tar | grep -q -- 'PocketMuse.elfo'
+          tar -tf build/PocketMuse.tar | grep -q -- 'PocketMuse_ICON.bin'
+          ls -la build/
+
+      - name: Gate undefined symbols against the curated SDK surface
+        run: |
+          set -euo pipefail
+          python3 -m pip install -e sdk
+          python3 -m tools.pm --ci check
+        env:
+          PM_SDK_ROOT: ${{ github.workspace }}/sdk
+
+      - uses: actions/upload-artifact@v4
         with:
-          file_pattern: PocketMuse.tar
-          commit_message: "chore: auto-build PocketMuse.tar"
-          commit_user_name: "github-actions[bot]"
-          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+          name: pocketmuse-tar-${{ github.sha }}
+          path: |
+            build/PocketMuse.tar
+            build/PocketMuse.app.elf
+          if-no-files-found: error
+          retention-days: 14
