@@ -10,6 +10,7 @@ enum AppMode : uint8_t {
   MODE_BROWSER,
   MODE_NOWPLAYING,
   MODE_PLAYLIST,
+  MODE_SEARCH,
   MODE_HELP,
 };
 
@@ -51,6 +52,7 @@ extern bool g_shuffleEnabled;
 void browser_init();
 void browser_process_key(char ch);
 void browser_render();
+void browser_reveal_index(int index);
 
 void nowplaying_init();
 void nowplaying_process_key(char ch);
@@ -59,3 +61,7 @@ void nowplaying_render();
 
 void playlist_process_key(char ch);
 void playlist_render();
+
+void search_results_process_key(char ch);
+void search_results_scroll(int direction);
+void search_results_render();

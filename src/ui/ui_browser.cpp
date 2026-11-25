@@ -1,6 +1,7 @@
 #include "library.h"
 #include "muse.h"
 #include "playlist.h"
+#include "search.h"
 #include "ui_helpers.h"
 #include "ui_player.h"
 
@@ -28,11 +29,36 @@ static int track_count() {
   return 0;
 }
 
+static void draw_browser_footer() {
+  if (playlistMgr().source() != PlaySource::Library)
+    draw_footer("L/R:nav SPC:play Q:find P:src F:fav D:del H:help");
+  else
+    draw_footer("L/R:nav SPC:play Q:find P:src F:fav L:loop H:help");
+}
+
+static void open_search_() {
+  if (playlistMgr().source() != PlaySource::Library &&
+      !player_select_library())
+    return;
+  search_begin();
+}
+
 void browser_init() {
   g_appMode = MODE_BROWSER;
   g_selIndex = 0;
   g_scrollOffset = 0;
   g_trackCount = track_count();
+  g_needsRedraw = true;
+}
+
+void browser_reveal_index(int index) {
+  if (index < 0 || index >= library().count())
+    return;
+  g_selIndex = index;
+  if (g_selIndex < g_scrollOffset)
+    g_scrollOffset = g_selIndex;
+  else if (g_selIndex >= g_scrollOffset + kMaxVis)
+    g_scrollOffset = g_selIndex - kMaxVis + 1;
   g_needsRedraw = true;
 }
 
@@ -58,9 +84,13 @@ void browser_process_key(char ch) {
     break;
   case PM_KEY_SPACE:
   case PM_KEY_ENTER:
-    if (n > 0 && g_selIndex < n) {
+    if (n > 0 && g_selIndex < n)
       player_play_index(g_selIndex);
-    }
+    break;
+  case 'q':
+  case 'Q':
+  case '/':
+    open_search_();
     break;
   case 'p':
   case 'P':
@@ -71,9 +101,8 @@ void browser_process_key(char ch) {
   case 'F':
     if (n > 0 && g_selIndex < n) {
       char path[256];
-      if (get_track_path(g_selIndex, path, sizeof(path)) && path[0]) {
+      if (get_track_path(g_selIndex, path, sizeof(path)) && path[0])
         player_toggle_favorite_path(path);
-      }
     }
     g_needsRedraw = true;
     break;
@@ -98,10 +127,10 @@ void browser_process_key(char ch) {
       g_needsRedraw = true;
     }
     break;
+  case 'h':
+  case 'H':
   case '?':
-    g_prevMode = g_appMode;
-    g_appMode = MODE_HELP;
-    g_needsRedraw = true;
+    open_help();
     break;
   }
 }
@@ -116,7 +145,7 @@ void browser_render() {
   int n = track_count();
   if (n == 0) {
     draw_empty_source();
-    draw_footer("P:source B:playing ?:help");
+    draw_browser_footer();
     pm_eink_refresh();
     return;
   }
@@ -149,7 +178,7 @@ void browser_render() {
     int titleMaxW = w - kTitleX - kMarkerW - 6;
     int style = i == g_selIndex ? PM_STYLE_SANS_BOLD : PM_STYLE_SMALL;
     const char *title = pm_layout_truncate_with_ellipsis(label, titleMaxW,
-                                                         style, PM_TARGET_EINK);
+                                                          style, PM_TARGET_EINK);
 
     char numBuf[16];
     snprintf(numBuf, sizeof(numBuf), "%2d.", i + 1);
@@ -158,8 +187,7 @@ void browser_render() {
       pm_eink_rect(0, y - 3, w - 1, y - 3 + kItemH - 1, false, true);
 
     pm_text(PM_TARGET_EINK, kNumX, baseline, numBuf, PM_STYLE_SMALL);
-    pm_text(PM_TARGET_EINK, kTitleX, baseline, title,
-            i == g_selIndex ? PM_STYLE_SANS_BOLD : PM_STYLE_SMALL);
+    pm_text(PM_TARGET_EINK, kTitleX, baseline, title, style);
 
     if (std::strcmp(path, g_nowPath) == 0 &&
         g_playState != PlayerState::Stopped) {
@@ -173,16 +201,7 @@ void browser_render() {
   }
 
   draw_scrollbar(n, kMaxVis, g_scrollOffset);
-
-  char footer[64] = {};
-  if (playlistMgr().source() != PlaySource::Library) {
-    snprintf(footer, sizeof(footer),
-             "L/R:nav SPC:play P:src F:fav D:del ?:help");
-  } else {
-    snprintf(footer, sizeof(footer),
-             "L/R:nav SPC:play P:src F:fav L:loop ?:help");
-  }
-  draw_footer(footer);
+  draw_browser_footer();
 
   pm_eink_refresh();
 }

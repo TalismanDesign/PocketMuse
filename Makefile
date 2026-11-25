@@ -17,10 +17,12 @@ $(APP_NAME)_ICON.bin: assets/icon.png tools/make_icon.py
 APP_SRCS := \
 	src/main.cpp \
 	src/muse.cpp \
+	src/search.cpp \
 	src/library.cpp \
 	src/playlist.cpp \
 	src/ui_player.cpp \
 	src/ui/ui_browser.cpp \
+	src/ui/ui_search.cpp \
 	src/ui/ui_nowplaying.cpp \
 	src/ui/ui_playlist.cpp \
 	src/ui/ui_helpers.cpp

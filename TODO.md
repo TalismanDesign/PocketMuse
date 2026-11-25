@@ -1,7 +1,5 @@
 # TODO
 
-- [ ] Search for specific song, album, or artist in the library
-
 ## Speaker volume
 
 - [ ] Raise `USB_STREAM` from `PM_LOG_LEVEL_ERROR` in `beginUsb()` first. It currently hides the driver's `Support volume control` lines.

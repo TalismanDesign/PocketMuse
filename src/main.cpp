@@ -1,6 +1,7 @@
 #include "library.h"
 #include "muse.h"
 #include "playlist.h"
+#include "search.h"
 #include "ui_helpers.h"
 #include "ui_player.h"
 
@@ -13,19 +14,42 @@
 static constexpr const char* kLogTag = "MUSE";
 
 static bool exit_key(char ch) {
-  return ch == PM_KEY_ESCAPE || ch == PM_KEY_ASCII_ESCAPE || ch == 'A';
+  return ch == PM_KEY_ESCAPE || ch == PM_KEY_ASCII_ESCAPE || ch == 'a' ||
+         ch == 'A';
 }
 
-static void process_key(char ch) {
+static void close_help() {
+  g_appMode = g_prevMode;
+  g_needsRedraw = true;
+}
+
+static bool process_key(char ch) {
+  if (search_editing()) {
+    search_process_key(ch);
+    return false;
+  }
+
+  if (g_appMode == MODE_SEARCH) {
+    search_results_process_key(ch);
+    return false;
+  }
+
+  if (g_appMode == MODE_HELP) {
+    if (help_process_key(ch))
+      return false;
+    close_help();
+    return false;
+  }
+
   if (exit_key(ch)) {
     music_stop();
     g_appMode = MODE_BROWSER;
-    return;
+    return true;
   }
 
-  if (g_appMode != MODE_HELP && (ch == 'u' || ch == 'U')) {
+  if (ch == 'u' || ch == 'U') {
     player_cycle_sink();
-    return;
+    return false;
   }
 
   switch (g_appMode) {
@@ -38,11 +62,11 @@ static void process_key(char ch) {
   case MODE_PLAYLIST:
     playlist_process_key(ch);
     break;
+  case MODE_SEARCH:
   case MODE_HELP:
-    g_appMode = g_prevMode;
-    g_needsRedraw = true;
     break;
   }
+  return false;
 }
 
 extern "C" int main(int argc, char **argv) {
@@ -57,8 +81,6 @@ extern "C" int main(int argc, char **argv) {
 
   PM_LOGI(kLogTag, "Starting (SDK %s)", PM_SDK_VERSION);
 
-  pm_audio_begin();
-
   pm_oled_init();
 
   if (!playlistMgr().begin()) {
@@ -67,8 +89,14 @@ extern "C" int main(int argc, char **argv) {
     return 1;
   }
 
-  library().scan();
-  g_trackCount = library().count();
+  if (library().scan() < 0) {
+    g_trackCount = 0;
+    pm_oled_sysmsg("Library scan failed", 1200);
+  } else {
+    g_trackCount = library().count();
+  }
+
+  pm_audio_begin();
 
   browser_init();
 
@@ -77,9 +105,9 @@ extern "C" int main(int argc, char **argv) {
   while (!exit_requested) {
     char ch = pm_kb_read();
     if (ch) {
-      process_key(ch);
+      const bool shouldExit = process_key(ch);
       pm_activity();
-      if (exit_key(ch)) {
+      if (shouldExit) {
         exit_requested = true;
         break;
       }
@@ -88,8 +116,13 @@ extern "C" int main(int argc, char **argv) {
     int scrollVec = pm_touch_get_scroll_vector();
     if (scrollVec != 0) {
       pm_activity();
-      if (scrollVec > 0 ? player_volume_up() : player_volume_down())
+      if (g_appMode == MODE_HELP) {
+        help_scroll(scrollVec);
+      } else if (g_appMode == MODE_SEARCH) {
+        search_results_scroll(scrollVec);
+      } else if (scrollVec > 0 ? player_volume_up() : player_volume_down()) {
         g_needsRedraw = true;
+      }
     }
 
     player_poll();
@@ -102,7 +135,7 @@ extern "C" int main(int argc, char **argv) {
     }
     ui_update_oled();
 
-    if (g_needsRedraw) {
+    if (g_needsRedraw && !search_editing()) {
       g_needsRedraw = false;
       switch (g_appMode) {
       case MODE_HELP:
@@ -116,6 +149,9 @@ extern "C" int main(int argc, char **argv) {
         break;
       case MODE_PLAYLIST:
         playlist_render();
+        break;
+      case MODE_SEARCH:
+        search_results_render();
         break;
       }
     }

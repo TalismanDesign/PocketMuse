@@ -31,21 +31,27 @@ The SDK build recipe locates the installed Espressif Xtensa C++ toolchain, if in
 
 | Input          | Action                                                         |
 | -------------- | -------------------------------------------------------------- |
-| LEFT / RIGHT   | Navigate list / skip track                                     |
-| UP / DOWN      | Volume (Now Playing)                                           |
+| LEFT / RIGHT   | Browse / pick a search result / page help                      |
+| TOUCH SCROLL   | Volume; pick a search result; page help                        |
 | SPACE          | Play / pause                                                   |
-| ENTER          | Select / play                                                  |
+| ENTER          | Play selected track or selected search result                  |
+| Q              | Open search from the Library                                   |
+| B              | Back to the Library; switch to Now Playing                     |
+| H              | Help overlay                                                   |
 | P              | Cycle source in browser; show queue from Now Playing           |
 | F              | Toggle favorite                                                |
 | S              | Toggle shuffle                                                 |
 | L              | Cycle loop (None/One/All)                                      |
 | D              | Remove selected favorite / playlist entry; keep the music file |
 | U              | Output: Auto / Piezo / USB                                     |
-| B              | Switch browser / Now Playing; return from queue                |
-| ?              | Help overlay                                                   |
-| ESC / A        | Exit to PocketMage OS                                          |
+| BKSP           | Delete in the editor; close it when empty                      |
+| SEL            | Clear the editor draft                                         |
+| A              | Exit to PocketMage OS                                          |
+| Fn+LEFT        | Back (optional alias)                                          |
 
-Touch scroll on the slider controls volume in all modes.
+Search runs on the OLED. Press `Q`, type a title, artist, or folder name, then press ENTER to open a separate results list. LEFT/RIGHT picks a result and ENTER plays that track from the full Library, so next, previous, and shuffle continue from it. `B` returns to the Library, `Q` reopens the editor, BKSP deletes, and SEL clears the draft. Nothing is written to the SD card for search.
+
+On the help screen, LEFT/RIGHT or touch scroll switch pages. Any other key returns to the previous screen.
 
 ## Playback and storage
 
@@ -55,7 +61,7 @@ Volume and your output choice are saved as SDK settings in NVS under `PMAudio`, 
 
 A track that ends on its own advances once. Loop-one only changes that automatic advance: pressing next still skips. Shuffle goes through its cycle and stops, unless loop-all is on. Editing favorites somewhere else doesn't disturb the shuffle cycle you're currently in, and if the playing file has gone missing, its entry stays at `-1`.
 
-The SDK reads tags as the file streams past, so nothing is loaded into memory ahead of time. That covers ID3v2.3/v2.4 in MP3s, LIST/INFO in WAVs, and Vorbis comments in Ogg and Opus. Cover art is handled the same way. Embedded JPEG or PNG, including the base64 picture blocks used by Ogg, goes straight from the file into the OS 1-bit image decoder. There's no artwork cache to maintain, and files without a usable cover get the fallback image.
+The SDK reads tags as the file streams past, so nothing is loaded into memory ahead of time. That covers ID3v2.3/v2.4 in MP3s, LIST/INFO in WAVs, and Vorbis comments in Ogg and Opus. Embedded JPEG or PNG, including the base64 picture blocks used by Ogg, streams from the file into the OS 1-bit image decoder. PocketMuse keeps the decoded image for the current track and discards it when the next track starts. Files without a usable cover get the fallback image.
 
 On the OLED, the progress bar counts decoded audio frames, which keeps it lined up with what you hear. Total time comes from the file wherever it's available: MPEG headers with Xing or VBRI, WAV data chunks, or the last granule of an Ogg page. For MP3s without an exact length, the player estimates from the bitrate.
 

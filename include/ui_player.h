@@ -3,11 +3,11 @@
 #include <cstddef>
 #include <cstdint>
 
-extern int *g_shuffleIdx;
-extern int g_shuffleIdxCount;
-extern int g_shufflePos;
+extern uint8_t *g_shuffleVisited;
+extern int g_shuffleVisitedCount;
 
 void build_shuffle();
+void free_shuffle();
 
 bool get_track_path(int index, char *buf, size_t bufSize);
 
@@ -16,6 +16,7 @@ void player_next_track();
 void player_advance_auto();
 void player_prev_track();
 void player_cycle_source();
+bool player_select_library();
 void player_toggle_favorite();
 void player_toggle_favorite_path(const char *path);
 void player_remove_selected();

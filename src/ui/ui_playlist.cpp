@@ -56,10 +56,10 @@ void playlist_process_key(char ch) {
     }
     g_needsRedraw = true;
     break;
+  case 'h':
+  case 'H':
   case '?':
-    g_prevMode = g_appMode;
-    g_appMode = MODE_HELP;
-    g_needsRedraw = true;
+    open_help();
     break;
   }
 }
@@ -74,7 +74,7 @@ void playlist_render() {
   int n = g_trackCount;
   if (n == 0) {
     draw_empty_source();
-    draw_footer("B:back ?:help");
+    draw_footer("B:back H:help");
     pm_eink_refresh();
     return;
   }
@@ -127,9 +127,9 @@ void playlist_render() {
 
   char footer[64];
   if (playlistMgr().source() == PlaySource::Playlist) {
-    snprintf(footer, sizeof(footer), "L/R:nav SPC:play D:del B:back ?:help");
+    snprintf(footer, sizeof(footer), "L/R:nav SPC:play D:del B:back H:help");
   } else {
-    snprintf(footer, sizeof(footer), "L/R:nav SPC:play B:back ?:help");
+    snprintf(footer, sizeof(footer), "L/R:nav SPC:play B:back H:help");
   }
   draw_footer(footer);
 

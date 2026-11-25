@@ -3,6 +3,7 @@
 #include "muse.h"
 #include "paths.h"
 #include "playlist.h"
+#include "search.h"
 #include "ui_player.h"
 
 #include "pm_app_api.h"
@@ -47,6 +48,13 @@ void draw_empty_source() {
   pm_text(PM_TARGET_EINK, 8, 95, hint, PM_STYLE_SMALL);
 }
 
+void open_help() {
+  help_reset();
+  g_prevMode = g_appMode;
+  g_appMode = MODE_HELP;
+  g_needsRedraw = true;
+}
+
 static int transport_icon(PlayerState state) {
   switch (state) {
   case PlayerState::Playing:
@@ -82,7 +90,8 @@ void draw_scrollbar(int total, int visible, int position) {
   if (total <= visible)
     return;
   int h = pm_eink_height();
-  pm_ui_draw_scrollbar(total, visible, position, -1, 0, h, 3, false, 0, 65535);
+  pm_ui_draw_scrollbar(total, visible, position, -1, 0, h, kScrollbarW, false,
+                       0, 65535);
 }
 
 void format_time(char *buf, size_t bufSize, uint32_t seconds) {
@@ -115,10 +124,38 @@ void truncate_text(const char *src, char *dst, size_t maxDst) {
   dst[maxDst - 1] = '\0';
 }
 
+namespace {
+
+constexpr int kKbShift = 1;
+constexpr int kKbFn = 2;
+constexpr int kKbFnShift = 3;
+constexpr int kModifierGutter = 6;
+
+const char *modifier_badge() {
+  switch (pm_kb_state()) {
+  case kKbShift:
+    return "SHIFT";
+  case kKbFn:
+    return "FN";
+  case kKbFnShift:
+    return "FN+SHIFT";
+  default:
+    return nullptr;
+  }
+}
+
+} // namespace
+
 void ui_update_oled() {
   pm_oled_set_power_save(false);
   pm_oled_clear();
   pm_text_color(PM_TARGET_OLED, 0);
+
+  if (search_editing()) {
+    pm_oled_oled_line(search_edit_query(), search_cursor_byte(), false,
+                      search_status_text(), false);
+    return;
+  }
 
   const int w = pm_oled_width();
   const int h = pm_oled_height();
@@ -152,7 +189,17 @@ void ui_update_oled() {
   pm_text(PM_TARGET_OLED, kTitleX, kTitleBaseline, title, PM_STYLE_MEDIUM);
   pm_text(PM_TARGET_OLED, w - timeW, kTitleBaseline, timeBuf, PM_STYLE_TINY);
 
-  pm_text(PM_TARGET_OLED, 0, kSinkBaseline, sink_label(), PM_STYLE_TINY);
+  const char *badge = modifier_badge();
+  const int badgeW =
+      badge ? pm_text_width(PM_TARGET_OLED, badge, PM_STYLE_TINY) : 0;
+  const int badgeX = badge ? w - badgeW - kModifierGutter : w;
+  const int sinkMaxW = badgeX - 4;
+  const char *sink = pm_layout_truncate_with_ellipsis(
+      sink_label(), sinkMaxW > 8 ? sinkMaxW : 8, PM_STYLE_TINY,
+      PM_TARGET_OLED);
+  pm_text(PM_TARGET_OLED, 0, kSinkBaseline, sink, PM_STYLE_TINY);
+  if (badge)
+    pm_text(PM_TARGET_OLED, badgeX, kSinkBaseline, badge, PM_STYLE_TINY);
 
   const int kBarH = 2;
   const int barY = h - kBarH;
@@ -169,40 +216,103 @@ void ui_update_oled() {
   pm_oled_send();
 }
 
-void ui_show_help() {
-  pm_ui_begin_eink_screen(false);
+namespace {
 
+struct HelpRow {
+  const char *key;
+  const char *desc;
+};
+
+constexpr HelpRow kHelpRows[] = {
+    {"L/R", "Browse / pick / page help"},
+    {"SPACE", "Play / pause"},
+    {"ENTER", "Play selected / apply search"},
+    {"Q", "Open search editor"},
+    {"B", "Back / Now Playing"},
+    {"P", "Cycle source / queue"},
+    {"F", "Toggle favorite"},
+    {"S", "Toggle shuffle"},
+    {"L", "Cycle loop mode"},
+    {"D", "Remove favorite/entry"},
+    {"U", "Output: Auto/USB/Piezo"},
+    {"BKSP", "Delete / close search"},
+    {"SEL", "Clear search text"},
+    {"A", "Exit PocketMuse"},
+    {"H", "This help"},
+};
+
+constexpr int kHelpRowCount =
+    static_cast<int>(sizeof(kHelpRows) / sizeof(kHelpRows[0]));
+constexpr int kHelpRowsPerPage = 5;
+constexpr int kHelpPageCount =
+    (kHelpRowCount + kHelpRowsPerPage - 1) / kHelpRowsPerPage;
+constexpr int kHelpFirstBaseline = 42;
+constexpr int kHelpRowPitch = 34;
+constexpr int kHelpChipW = 104;
+constexpr int kHelpDescX = 116;
+
+int s_helpPage = 0;
+
+bool change_help_page_(int delta) {
+  int next = s_helpPage + delta;
+  if (next < 0)
+    next = 0;
+  if (next >= kHelpPageCount)
+    next = kHelpPageCount - 1;
+  if (next == s_helpPage)
+    return false;
+  s_helpPage = next;
+  g_needsRedraw = true;
+  return true;
+}
+
+} // namespace
+
+void help_reset() { s_helpPage = 0; }
+
+bool help_process_key(char ch) {
+  if (ch == PM_KEY_LEFT || ch == PM_KEY_UP)
+    return change_help_page_(-1);
+  if (ch == PM_KEY_RIGHT || ch == PM_KEY_DOWN)
+    return change_help_page_(1);
+  return false;
+}
+
+void help_scroll(int direction) {
+  change_help_page_(direction > 0 ? 1 : -1);
+}
+
+void ui_show_help() {
+  if (s_helpPage < 0 || s_helpPage >= kHelpPageCount)
+    s_helpPage = 0;
+
+  pm_ui_begin_eink_screen(false);
   draw_header("PocketMuse Controls");
 
-  struct Row {
-    const char *key;
-    const char *desc;
-  };
-  Row rows[] = {
-      {"LEFT/RIGHT", "Navigate / skip track"},
-      {"UP/DOWN", "Volume (Now Playing)"},
-      {"SPACE", "Play / pause"},
-      {"ENTER", "Select / play"},
-      {"P", "Cycle source (Lib/Fav/Pl)"},
-      {"F", "Toggle favorite"},
-      {"S", "Toggle shuffle"},
-      {"L", "Cycle loop (None/One/All)"},
-      {"D", "Remove favorite / playlist entry"},
-      {"U", "Output: Auto / Piezo / USB"},
-      {"B", "Back to browser"},
-      {"?", "Show this screen"},
-      {"ESC / A", "Exit to OS"},
-  };
+  const int first = s_helpPage * kHelpRowsPerPage;
+  int end = first + kHelpRowsPerPage;
+  if (end > kHelpRowCount)
+    end = kHelpRowCount;
 
-  int y = 38;
-  for (auto &r : rows) {
-    pm_text(PM_TARGET_EINK, 8, y, r.key, PM_STYLE_TINY);
-    pm_text(PM_TARGET_EINK, 82, y, r.desc, PM_STYLE_TINY);
-    y += 12;
+  for (int i = first; i < end; ++i) {
+    const int row = i - first;
+    const int baseline = kHelpFirstBaseline + row * kHelpRowPitch;
+    pm_ui_draw_chip_text(8, baseline, kHelpRows[i].key, PM_STYLE_BODY_BOLD,
+                         kHelpChipW - 20, true, kHelpChipW, 8, 20, 5);
+    pm_text(PM_TARGET_EINK, kHelpDescX, baseline, kHelpRows[i].desc,
+            PM_STYLE_BODY);
+    if (row < end - first - 1)
+      pm_eink_rect(8, baseline + 11, pm_eink_width() - 8, baseline + 11, false,
+                   true);
   }
 
-  pm_eink_rect(0, y + 4, pm_eink_width() - 1, y + 4, false, true);
-  pm_text(PM_TARGET_EINK, 8, y + 16, "Press any key to close", PM_STYLE_TINY);
+  pm_ui_draw_scrollbar(kHelpRowCount, kHelpRowsPerPage, first, -1, 28,
+                       pm_eink_height() - 66, 3, false, 0, 65535);
+
+  char hint[48];
+  snprintf(hint, sizeof(hint), "Page %d/%d  L/R:page  other:close",
+           s_helpPage + 1, kHelpPageCount);
+  pm_text(PM_TARGET_EINK, 8, pm_eink_height() - 34, hint, PM_STYLE_TINY);
 
   draw_footer("PocketMuse help");
   pm_eink_refresh();

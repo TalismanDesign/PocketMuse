@@ -83,10 +83,10 @@ void nowplaying_process_key(char ch) {
   case 'L':
     player_cycle_loop_mode();
     break;
+  case 'h':
+  case 'H':
   case '?':
-    g_prevMode = g_appMode;
-    g_appMode = MODE_HELP;
-    g_needsRedraw = true;
+    open_help();
     break;
   }
 }
@@ -129,7 +129,7 @@ void nowplaying_render() {
     pm_text(PM_TARGET_EINK, 8, 80, "Nothing playing", PM_STYLE_TINY);
     pm_text(PM_TARGET_EINK, 8, 94, "Select a track from the browser",
             PM_STYLE_TINY);
-    draw_footer("B:browser ?:help");
+    draw_footer("B:browser H:help");
     pm_eink_refresh();
     return;
   }
@@ -238,7 +238,7 @@ void nowplaying_render() {
   }
   pm_text(PM_TARGET_EINK, volX, bandY + 6, volBuf, PM_STYLE_SMALL);
 
-  draw_footer("SPC:pause L/R:skip U:output B:browser ?:help");
+  draw_footer("SPC:pause L/R:skip U:output B:browser H:help");
 
   pm_eink_refresh();
 }

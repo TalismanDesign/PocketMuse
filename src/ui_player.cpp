@@ -10,52 +10,137 @@
 #include <cstdlib>
 #include <cstring>
 
-int *g_shuffleIdx = nullptr;
-int g_shuffleIdxCount = 0;
-int g_shufflePos = 0;
+uint8_t *g_shuffleVisited = nullptr;
+int g_shuffleVisitedCount = 0;
 
 namespace {
 uint32_t s_playbackId = 0;
+
+constexpr int kShuffleHistory = 64;
+int s_history[kShuffleHistory];
+int s_historyCount = 0;
+int s_redo[kShuffleHistory];
+int s_redoCount = 0;
+int s_remaining = 0;
+
+void shuffle_reset_state_() {
+  s_historyCount = 0;
+  s_redoCount = 0;
+  s_remaining = 0;
+}
+
+bool shuffle_marked_(int index) {
+  return (g_shuffleVisited[index >> 3] & (1u << (index & 7))) != 0;
+}
+
+void shuffle_mark_(int index) {
+  g_shuffleVisited[index >> 3] |= static_cast<uint8_t>(1u << (index & 7));
+}
+
+void history_push_(int index) {
+  if (s_historyCount < kShuffleHistory)
+    s_history[s_historyCount++] = index;
+}
+
+int history_pop_() {
+  return s_historyCount > 0 ? s_history[--s_historyCount] : -1;
+}
+
+void redo_push_(int index) {
+  if (s_redoCount < kShuffleHistory)
+    s_redo[s_redoCount++] = index;
+}
+
+int redo_pop_() {
+  return s_redoCount > 0 ? s_redo[--s_redoCount] : -1;
+}
+
+int shuffle_next_index_() {
+  const int replay = redo_pop_();
+  if (replay >= 0) {
+    history_push_(replay);
+    return replay;
+  }
+  if (s_remaining <= 0 || g_trackCount <= 0)
+    return -1;
+
+  const int n = g_trackCount;
+  int index = static_cast<int>(pm_random_range(0, static_cast<uint32_t>(n)));
+  for (int probe = 0; probe < n; ++probe) {
+    if (!shuffle_marked_(index)) {
+      shuffle_mark_(index);
+      --s_remaining;
+      history_push_(index);
+      return index;
+    }
+    if (++index >= n)
+      index = 0;
+  }
+  return -1;
+}
+
+int shuffle_prev_index_() {
+  const int previous = history_pop_();
+  if (previous >= 0) {
+    redo_push_(previous);
+    return previous;
+  }
+  s_redoCount = 0;
+  return g_nowTrackIndex >= 0 && g_nowTrackIndex < g_trackCount
+             ? g_nowTrackIndex
+             : 0;
+}
+} // namespace
+
+void free_shuffle() {
+  std::free(g_shuffleVisited);
+  g_shuffleVisited = nullptr;
+  g_shuffleVisitedCount = 0;
+  shuffle_reset_state_();
 }
 
 void build_shuffle() {
-  int n = g_trackCount;
+  const int n = g_trackCount;
   if (n <= 0) {
-    std::free(g_shuffleIdx);
-    g_shuffleIdx = nullptr;
-    g_shuffleIdxCount = 0;
-    g_shufflePos = 0;
+    free_shuffle();
     return;
   }
-  if (!g_shuffleIdx || g_shuffleIdxCount != n) {
-    std::free(g_shuffleIdx);
-    g_shuffleIdx = static_cast<int *>(std::malloc(n * sizeof(int)));
-    g_shuffleIdxCount = g_shuffleIdx ? n : 0;
-    if (!g_shuffleIdx) {
+  if (!g_shuffleVisited || g_shuffleVisitedCount != n) {
+    std::free(g_shuffleVisited);
+    g_shuffleVisited = static_cast<uint8_t *>(std::calloc((n + 7) / 8, 1));
+    g_shuffleVisitedCount = g_shuffleVisited ? n : 0;
+    if (!g_shuffleVisited) {
       g_shuffleEnabled = false;
       pm_oled_sysmsg("Not enough memory for shuffle", 800);
       return;
     }
   }
-  for (int i = 0; i < n; ++i)
-    g_shuffleIdx[i] = i;
-  for (int i = n - 1; i > 0; --i) {
-    int j = static_cast<int>(pm_random_range(0, static_cast<uint32_t>(i)));
-    int value = g_shuffleIdx[i];
-    g_shuffleIdx[i] = g_shuffleIdx[j];
-    g_shuffleIdx[j] = value;
-  }
-  g_shufflePos = -1;
+  std::memset(g_shuffleVisited, 0, (n + 7) / 8);
+  shuffle_reset_state_();
+  s_remaining = n;
   if (g_nowTrackIndex >= 0 && g_nowTrackIndex < n) {
-    for (int i = 0; i < n; ++i) {
-      if (g_shuffleIdx[i] == g_nowTrackIndex) {
-        g_shuffleIdx[i] = g_shuffleIdx[0];
-        g_shuffleIdx[0] = g_nowTrackIndex;
-        g_shufflePos = 0;
-        break;
-      }
+    shuffle_mark_(g_nowTrackIndex);
+    --s_remaining;
+  }
+}
+
+static void finish_source_change_() {
+  g_selIndex = 0;
+  g_trackCount = (playlistMgr().source() == PlaySource::Library)
+                     ? library().count()
+                     : playlistMgr().entryCount();
+  g_nowTrackIndex = -1;
+  for (int i = 0; i < g_trackCount; ++i) {
+    char path[256];
+    if (get_track_path(i, path, sizeof(path)) &&
+        std::strcmp(path, g_nowPath) == 0) {
+      g_nowTrackIndex = i;
+      break;
     }
   }
+  if (g_shuffleEnabled)
+    build_shuffle();
+  g_needsRedraw = true;
 }
 
 bool get_track_path(int index, char *buf, size_t bufSize) {
@@ -99,13 +184,11 @@ void player_play_index(int index) {
   g_nowPath[sizeof(g_nowPath) - 1] = '\0';
 
   g_nowTrackIndex = index;
-  if (g_shuffleEnabled && g_shuffleIdx) {
-    for (int i = 0; i < g_shuffleIdxCount; ++i) {
-      if (g_shuffleIdx[i] == index) {
-        g_shufflePos = i;
-        break;
-      }
-    }
+  if (g_shuffleEnabled && g_shuffleVisited && index >= 0 &&
+      index < g_shuffleVisitedCount && !shuffle_marked_(index)) {
+    shuffle_mark_(index);
+    if (s_remaining > 0)
+      --s_remaining;
   }
   g_nowProgress = 0.0f;
   g_nowElapsed = 0;
@@ -144,19 +227,20 @@ void player_next_track() {
   int next;
 
   if (g_shuffleEnabled) {
-    if (!g_shuffleIdx || g_shuffleIdxCount != n)
+    if (!g_shuffleVisited || g_shuffleVisitedCount != n)
       build_shuffle();
-    g_shufflePos++;
-    if (g_shufflePos >= n) {
-      if (g_loopMode != LoopMode::All) {
+    next = shuffle_next_index_();
+    if (next < 0) {
+      if (g_loopMode == LoopMode::All) {
+        build_shuffle();
+        next = shuffle_next_index_();
+      }
+      if (next < 0) {
         music_stop();
         g_needsRedraw = true;
         return;
       }
-      build_shuffle();
-      g_shufflePos = n > 1 ? 1 : 0;
     }
-    next = g_shuffleIdx ? g_shuffleIdx[g_shufflePos] : 0;
   } else {
     next = g_nowTrackIndex + 1;
     if (g_loopMode == LoopMode::All && next >= n)
@@ -194,12 +278,9 @@ void player_prev_track() {
   int prev;
 
   if (g_shuffleEnabled) {
-    if (!g_shuffleIdx || g_shuffleIdxCount != n)
+    if (!g_shuffleVisited || g_shuffleVisitedCount != n)
       build_shuffle();
-    g_shufflePos--;
-    if (g_shufflePos < 0)
-      g_shufflePos = g_loopMode == LoopMode::All ? n - 1 : 0;
-    prev = g_shuffleIdx ? g_shuffleIdx[g_shufflePos] : 0;
+    prev = shuffle_prev_index_();
   } else {
     prev = g_nowTrackIndex - 1;
     if (prev < 0) {
@@ -243,32 +324,29 @@ void player_cycle_source() {
 
   if (!loaded)
     pm_oled_sysmsg("Cannot read tracks from SD", 1000);
-  g_selIndex = 0;
-  g_trackCount = (playlistMgr().source() == PlaySource::Library)
-                     ? library().count()
-                     : playlistMgr().entryCount();
-  g_nowTrackIndex = -1;
-  for (int i = 0; i < g_trackCount; ++i) {
-    char path[256];
-    if (get_track_path(i, path, sizeof(path)) &&
-        std::strcmp(path, g_nowPath) == 0) {
-      g_nowTrackIndex = i;
-      break;
-    }
-  }
-  if (g_shuffleEnabled)
-    build_shuffle();
+  finish_source_change_();
+}
 
-  g_needsRedraw = true;
+bool player_select_library() {
+  if (playlistMgr().source() == PlaySource::Library)
+    return true;
+  if (!playlistMgr().playLibrary()) {
+    pm_oled_sysmsg("Cannot read tracks from SD", 1000);
+    return false;
+  }
+  finish_source_change_();
+  return true;
 }
 
 void player_toggle_favorite() { player_toggle_favorite_path(g_nowPath); }
 
 static void refresh_source_after_edit(int previousIndex) {
   const int previousCount = g_trackCount;
-  g_trackCount = playlistMgr().source() == PlaySource::Library
-                     ? library().count()
-                     : playlistMgr().entryCount();
+  if (playlistMgr().source() == PlaySource::Library) {
+    g_trackCount = library().count();
+  } else {
+    g_trackCount = playlistMgr().entryCount();
+  }
   g_selIndex = g_trackCount > 0 && g_selIndex >= g_trackCount ? g_trackCount - 1
                                                               : g_selIndex;
   if (g_trackCount == 0)
@@ -339,6 +417,8 @@ void player_toggle_shuffle() {
   g_shuffleEnabled = !g_shuffleEnabled;
   if (g_shuffleEnabled)
     build_shuffle();
+  else
+    free_shuffle();
   g_needsRedraw = true;
 }
 
